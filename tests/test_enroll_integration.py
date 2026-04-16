@@ -136,9 +136,12 @@ def main() -> int:
         assert meta["tunnel_ip"] == "10.200.0.2/32", meta
         assert meta["virtual_subnet"] == "10.100.0.0/16", meta
         assert "192.168.50.0/24" in meta["real_subnets"], meta
+        mapping_virts = {m["virtual"]: m["real"] for m in meta["subnet_mappings"]}
+        assert "10.100.0.0/24" in mapping_virts, meta["subnet_mappings"]
+        assert mapping_virts["10.100.0.0/24"] == "192.168.50.0/24", mapping_virts
 
         stderr_out = result.stderr
-        if "NETMAP 10.100.50.0/24 -> 192.168.50.0/24" not in stderr_out:
+        if "NETMAP 10.100.0.0/24 -> 192.168.50.0/24" not in stderr_out:
             print("FULL STDERR:\n" + stderr_out, file=sys.stderr)
             raise AssertionError("NETMAP log missing")
         assert "DRY: iptables" in stderr_out, stderr_out

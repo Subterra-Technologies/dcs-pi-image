@@ -145,13 +145,6 @@ EOF
 
 priv hostnamectl set-hostname "${HOSTNAME_NEW}"
 
-VIRTUAL_BASE="$(python3 -c "
-import ipaddress, sys
-n = ipaddress.ip_network(sys.argv[1])
-octs = n.network_address.exploded.split('.')
-print(f'{octs[0]}.{octs[1]}')
-" "${VIRTUAL_SUBNET}")"
-
 install_netmap_pair() {
     local virtual_slice="$1" real="$2"
     priv iptables -t nat -A PREROUTING -i wg0 -d "${virtual_slice}" \
@@ -164,16 +157,16 @@ while IFS= read -r real; do
     REAL_SUBNETS+=("${real}")
 done < <(jq -r '.real_subnets[]' <<<"${RESP}")
 
-for real in "${REAL_SUBNETS[@]}"; do
-    if [[ "${real}" != */24 ]]; then
-        log "WARN: ${real} is not /24; skipping NETMAP (configure manually)"
-        continue
-    fi
-    third="${real#*.*.}"
-    third="${third%%.*}"
-    virtual_slice="${VIRTUAL_BASE}.${third}.0/24"
+MAPPING_COUNT="$(jq '.subnet_mappings | length' <<<"${RESP}")"
+if [[ "${MAPPING_COUNT}" -eq 0 ]]; then
+    log "WARN: hub returned no subnet_mappings — no NETMAP rules installed"
+fi
+
+while IFS= read -r pair; do
+    virtual_slice="$(jq -r '.virtual' <<<"${pair}")"
+    real="$(jq -r '.real' <<<"${pair}")"
     install_netmap_pair "${virtual_slice}" "${real}"
-done
+done < <(jq -c '.subnet_mappings[]' <<<"${RESP}")
 
 priv iptables -t nat -A POSTROUTING -o "${LAN_IFACE}" -j MASQUERADE
 
@@ -192,8 +185,10 @@ jq -n \
     --arg hub_endpoint "${HUB_EP}" \
     --arg enrolled_at "$(date -u +%FT%TZ)" \
     --argjson real_subnets "$(printf '%s\n' "${REAL_SUBNETS[@]}" | jq -R . | jq -s .)" \
+    --argjson subnet_mappings "$(jq '.subnet_mappings' <<<"${RESP}")" \
     '{hostname:$hostname, tunnel_ip:$tunnel_ip, virtual_subnet:$virtual_subnet,
-      hub_endpoint:$hub_endpoint, real_subnets:$real_subnets, enrolled_at:$enrolled_at}' \
+      hub_endpoint:$hub_endpoint, real_subnets:$real_subnets,
+      subnet_mappings:$subnet_mappings, enrolled_at:$enrolled_at}' \
     > "${ENROLL_META}"
 
 priv systemctl enable --now wg-quick@wg0.service
