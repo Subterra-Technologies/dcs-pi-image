@@ -1,211 +1,201 @@
-# Subterra WG Fleet — Ops Runbook
+# Subterra Fleet — Ops Runbook
 
-Operational procedures for the WireGuard fleet: bringing up the concentrator, onboarding a school, approving and revoking Pis, and recovering from common failures.
+Operational procedures for the Headscale + Tailscale fleet. Portable, lives in-repo so it's reachable without Docmost.
 
-Two repos are referenced throughout:
+Two repos to know:
 
-- `subterra-wg-hub` — datacenter concentrator + enrollment service
+- `subterra-wg-hub` — Headscale coordinator + admin CLI + Zabbix-VM bootstrap
 - `subterra-pi-image` — Pi 5 golden image (this repo)
 
 ---
 
-## 1. Concentrator initial deploy (one-time per hub)
+## 1. Concepts in three lines
 
-Target: a fresh Debian 12+ VM with a public IPv4 address.
+- **District = Headscale user.** Every district gets one user. Slug = user name.
+- **Nodes are tagged.** `tag:pi` for the Pi at the main school; `tag:zabbix` for each Zabbix VM in that district.
+- **Isolation is ACL-enforced.** `autogroup:member` can reach `autogroup:self:*` (same user only). Ops has full access.
 
-1. Provision the VM: 2 vCPU, 2 GB RAM, 20 GB disk. Open UDP/51820 and TCP/8443 on the provider firewall. TCP/22 only from the ops management CIDR.
-2. `git clone <hub-repo> /opt/subterra-hub-src` on the VM.
-3. `sudo /opt/subterra-hub-src/setup.sh` — writes `/etc/subterra-hub/setup.env` and exits. Edit that file to fill in `MONITORING_CIDR` (e.g. `10.10.99.0/28` — the block your Zabbix VMs live in), `MGMT_CIDR`, `WG_ENDPOINT`, then re-run `sudo /opt/subterra-hub-src/setup.sh`.
-4. At the end, setup prints the hub's WG public key. Record it — it's also at `/etc/wireguard/hub.pubkey`.
-5. Point DNS for `WG_ENDPOINT` at the VM's public IP. Verify reachability:
+## 2. Coordinator install (one time)
+
+1. Fresh Debian 12+ VM. Public IPv4. DNS A record `hub.subterra.one` → that IP.
+2. Edge router port-forwards: TCP/80 (ACME HTTP-01) + TCP/443 (Headscale API + DERP fallback) → this VM.
+3. On the VM:
    ```
-   sudo systemctl status enrollment.service
-   curl -sSf https://hub.example.com:8443/healthz
+   git clone <subterra-wg-hub repo> /opt/subterra-hub-src
+   sudo /opt/subterra-hub-src/setup.sh          # writes template env, exits
+   sudo vi /etc/subterra-hub/setup.env          # set COORDINATOR_HOSTNAME, ACME_EMAIL, OPS_EMAIL
+   sudo /opt/subterra-hub-src/setup.sh          # real install
    ```
-6. Add a route on the DC core for `10.200.0.0/16` and for each allocated per-school virtual `/16` (`10.100.0.0/16` through `10.199.0.0/16`) pointing at the concentrator. Zabbix server must be able to reach those via the concentrator.
-7. Lock down: the concentrator's FORWARD chain only allows `MONITORING_CIDR`. Every Zabbix VM that needs school access must live inside that CIDR. Scaling out: add a new Zabbix VM on an IP inside `MONITORING_CIDR` — no concentrator edits required.
-
-## 2. Per-school onboarding
-
-### 2a. Record the school in the hub
-
-```bash
-sudo -u subterra-hub /opt/subterra-hub/.venv/bin/subterra-hub \
-    add-school oakridge "Oakridge ISD"
-```
-
-Slugs must be lowercase, hyphen-separated, unique. Keep them stable — they become the Pi hostname prefix (`oakridge-pi01`, `oakridge-pi02`, …).
-
-### 2b. Generate a one-time enrollment token
-
-```bash
-sudo -u subterra-hub /opt/subterra-hub/.venv/bin/subterra-hub \
-    issue-token oakridge --valid-days 14
-```
-
-The command prints the raw token on stdout. This is the **only** time it's shown — capture it immediately. The token is stored hashed; you cannot retrieve it later.
-
-### 2c. Flash a Pi
-
-One-time per Pi, done on the ops bench:
-
-1. On a USB M.2 NVMe dock, flash the latest `subterra-pi-*-lite.img.xz` (produced by `image/build.sh`, see §7) to the NVMe drive.
-2. Mount the boot partition (`/boot/firmware` on the target — usually the first FAT partition on the NVMe).
-3. Create `subterra-enroll.json` on that partition:
-   ```json
-   {
-     "enroll_token": "<paste-the-raw-token>",
-     "enrollment_url": "https://hub.example.com:8443",
-     "candidate_subnets": ["192.168.1.0/24", "192.168.10.0/24"]
-   }
+4. Verify:
    ```
-   `candidate_subnets` is optional but strongly recommended — it's the list of real school subnets the Pi should NETMAP. The Pi will auto-detect its primary subnet on top of these. Only `/24` subnets are supported today.
-4. Unmount and seat the NVMe in the Pi's M.2 HAT+.
-5. One-time EEPROM boot order (do this once per Pi before shipping):
+   sudo systemctl status headscale
+   sudo subterra-admin list-districts            # empty, but no error
+   curl -fsS https://hub.subterra.one/health    # should be 200
    ```
-   sudo rpi-eeprom-config --edit
-   # Ensure: BOOT_ORDER=0xf416  (NVMe, USB, network, restart)
-   sudo reboot
+   If ACME fails, check ports 80+443 reachable and DNS correct.
+
+## 3. Onboarding a new district
+
+All commands run on the coordinator VM as an admin with sudo access.
+
+1. **Create the district.**
    ```
-   Subsequent NVMe swaps do not need this again.
-6. Label the Pi case with the school slug and the token's last 6 chars (for reconciliation at approval time).
-7. Ship.
+   sudo subterra-admin add-district <slug>
+   ```
+   Slug rule: lowercase, hyphen-separated, unique. Example: `oakridge`, `lincoln-city`.
 
-### 2d. First boot at the school
+2. **Issue a pre-auth key for the Pi.**
+   ```
+   sudo subterra-admin issue-token <slug> pi --expiration 14d
+   ```
+   Raw `hskey-auth-...` string is printed. Capture it — only chance to see it.
 
-School IT plugs the Pi into a PoE+ port and a LAN port. Expected sequence:
+3. **Drop the key onto a Pi's NVMe.** On the ops flash bench:
+   - Flash `subterra-pi-*-lite.img.xz` to a USB-M.2 dock.
+   - Mount the boot partition. Create `subterra-enroll.json`:
+     ```json
+     {
+       "authkey": "hskey-auth-...",
+       "coordinator": "https://hub.subterra.one",
+       "district": "<slug>",
+       "advertise_routes": ["192.168.1.0/24", "192.168.10.0/24", "10.5.0.0/24"]
+     }
+     ```
+     `advertise_routes` is ops-declared district LAN subnets (ask district IT). Auto-detected primary subnet merges in on top.
+   - Unmount, seat NVMe in Pi 5 + M.2 HAT+.
+   - One-time per Pi, before shipping: boot with keyboard + HDMI, run `sudo rpi-eeprom-config --edit`, set `BOOT_ORDER=0xf416`, reboot.
+   - Ship.
 
-1. Pi boots from NVMe (~30 s).
-2. `first-boot.service` runs `subterra-enroll`: generates WG keypair, detects LAN, POSTs to the hub with exponential backoff.
-3. On success, Pi writes `wg0.conf`, installs NETMAP rules, enables `wg-quick@wg0` and `subterra-heartbeat.timer`, then reboots once.
-4. After reboot, tunnel comes up but will **not** establish handshakes until ops approves — the hub has the peer in `pending` state.
+4. **Pi boots at school.** Auto-enrolls in <2 minutes. Verify:
+   ```
+   sudo subterra-admin list-nodes <slug>
+   # should show the Pi with its tag:pi and Tailscale IP
+   ```
+   Approved routes auto-advertise by policy (RFC1918 is auto-approved for `tag:pi`). Verify:
+   ```
+   sudo subterra-admin routes <slug>
+   ```
 
-Total elapsed: under 2 minutes from cold boot to `pending` appearing on the hub.
+5. **Stand up Zabbix VMs for that district.** For each Zabbix VM:
+   - Create the VM on Proxmox. No public IP needed; only outbound internet.
+   - Issue a Zabbix-role token on the coordinator:
+     ```
+     sudo subterra-admin issue-token <slug> zabbix
+     ```
+   - On the Zabbix VM:
+     ```
+     git clone <subterra-wg-hub repo> /tmp/hub
+     sudo /tmp/hub/zabbix-vm/bootstrap.sh \
+         --coordinator https://hub.subterra.one \
+         --authkey hskey-auth-... \
+         --hostname zabbix-<slug>-a
+     ```
+   - Verify on the coordinator:
+     ```
+     sudo subterra-admin list-nodes <slug>
+     # Should now list both the Pi and the Zabbix VM
+     ```
 
-### 2e. Approve
+6. **Configure Zabbix hosts.** Add district devices to Zabbix using their **real IPs**. The Pi's subnet routes make them reachable. Example: switch at real `10.0.0.1` → enter `10.0.0.1` in Zabbix host interface, associate with that district's Zabbix VM. No virtual addresses, no translation.
 
-On the hub:
+## 4. Revoking a Pi or Zabbix VM
 
-```bash
-sudo -u subterra-hub /opt/subterra-hub/.venv/bin/subterra-hub list-pending
-# Verify serial matches the label on the shipped Pi.
-sudo -u subterra-hub /opt/subterra-hub/.venv/bin/subterra-hub approve <SERIAL>
+```
+sudo subterra-admin delete-node <hostname>
 ```
 
-The hub regenerates `wg0.conf`, calls `wg syncconf wg0`, and the tunnel becomes active within seconds. The Pi's `PersistentKeepalive=25` brings the handshake up without a restart.
+Node is removed from the tailnet; its tunnel drops within seconds. If it's a compromised Pi, also power it off remotely — it still has its Tailscale keys until you wipe the NVMe.
 
-Confirm:
+## 5. Updating ACL policy
 
-```bash
-sudo -u subterra-hub /opt/subterra-hub/.venv/bin/subterra-hub handshakes
-# Expect the new peer to show a recent handshake.
+Edit `/etc/headscale/acl.hujson` on the coordinator, then:
+
+```
+sudo subterra-admin policy-reload    # if supported by your headscale version
+# or
+sudo systemctl restart headscale     # brief disconnect (~5s) for all nodes
 ```
 
-## 3. Zabbix configuration
+Policy mode `file` reloads on SIGHUP in current versions; the restart path is the safe fallback.
 
-After approval, the school is reachable at its virtual `/16`. If a real subnet is `192.168.5.0/24`, the Pi NETMAPs it to `<virtual_slice>.5.0/24` where `virtual_slice` is the first two octets of the school's virtual `/16`.
+## 6. Ops SSH to any node
 
-Example: school `oakridge` assigned virtual `10.100.0.0/16` + real `192.168.5.0/24` → device at real `192.168.5.42` is reachable from Zabbix at `10.100.5.42`.
+From your ops laptop (joined to the tailnet as a `group:ops` member):
 
-Add the Zabbix host with the virtual IP as its interface address. SNMP/ICMP/agent polling all work through the tunnel transparently.
-
-### 3a. Migrating a school to `zabbix-proxy`
-
-`zabbix-proxy-sqlite3` is pre-installed on every Pi but disabled. To flip:
-
-```bash
-# SSH into the Pi via its tunnel IP (from the concentrator's 10.200.0.0/16 overlay).
-ssh subterra@10.200.0.2
-sudo systemctl enable --now zabbix-proxy
-# Edit /etc/zabbix/zabbix_proxy.conf for Server=<zabbix-server> and ProxyMode.
+```
+tailscale ssh subterra@<pi-hostname>
+tailscale ssh subterra@zabbix-oakridge-a
 ```
 
-Then on the Zabbix server, reassign that school's hosts from direct polling to the new proxy.
+No SSH keys to distribute. ACL governs who can SSH where. Sessions are logged via Tailscale.
 
-## 4. Revoking a school
+## 7. Checking fleet health
 
-```bash
-sudo -u subterra-hub /opt/subterra-hub/.venv/bin/subterra-hub revoke <SERIAL>
+```
+sudo subterra-admin list-nodes             # everything in the tailnet
+sudo subterra-admin routes                 # advertised + approved routes
+sudo headscale nodes list --output json | jq '.[] | {name, online, lastSeen}'
 ```
 
-Sets the peer to `revoked`, regenerates `wg0.conf`, calls `wg syncconf`. The tunnel drops within seconds. The Pi will continue to retry handshakes (no-op from the hub's perspective). If you want it off the network permanently, also power it down — the Pi still has its keys locally.
+Pi-side:
 
-## 5. Maintenance
-
-### Rotating the hub key
-
-This invalidates every Pi's config. Only do this in response to a compromise.
-
-1. `sudo systemctl stop enrollment.service wg-quick@wg0.service`
-2. `sudo rm /etc/wireguard/hub.key /etc/wireguard/hub.pubkey /etc/wireguard/wg0.conf`
-3. Re-run `sudo /opt/subterra-hub-src/setup.sh` (regenerates keys).
-4. For each active school, reissue tokens and redeploy Pis (they must re-enroll).
-
-### Updating the image
-
-1. Cut a release of `subterra-pi-image`; run `./image/build.sh`.
-2. Flash new NVMes for new shipments from the new image.
-3. For deployed Pis, in-place updates ride on `unattended-upgrades` (security only). For larger changes, ship a new NVMe as a swap.
-
-### Checking tunnel health
-
-```bash
-# On the hub:
-sudo -u subterra-hub /opt/subterra-hub/.venv/bin/subterra-hub handshakes
-sudo wg show wg0
-
-# On a specific Pi (via tunnel):
-sudo journalctl -u subterra-heartbeat --since '-10m'
-sudo wg show wg0
+```
+tailscale status
+journalctl -u subterra-heartbeat --since -10m
 ```
 
-## 6. Troubleshooting
+## 8. Troubleshooting
 
-| Symptom | Likely cause | What to check |
+| Symptom | First check | Likely cause |
 |---|---|---|
-| Pi never appears as pending on the hub | DNS/firewall blocks outbound UDP or the enrollment URL is unreachable | On the Pi: `journalctl -u first-boot` shows retry loop. From school LAN: `curl -v https://hub.example.com:8443/healthz` |
-| Pi enrolls but tunnel won't come up | Peer is still `pending` | Check `subterra-hub list-pending`, approve |
-| Tunnel up but Zabbix can't reach virtual IP | Missing DC route for that school's virtual `/16`, or FORWARD rule blocks | `ip route` on concentrator + Zabbix; `iptables -L FORWARD -v` on concentrator |
-| Zabbix can ping virtual network gateway but not hosts | NETMAP rule missing for that real subnet | On Pi: `sudo iptables -t nat -L PREROUTING -v` |
-| Pi reboots every 10 min | Hardware watchdog tripped — kernel hang | `journalctl -b -1` on Pi |
-| `wg-quick@wg0` fails on boot | `wg0.conf` corrupted or missing after power-cut | `cat /etc/wireguard/wg0.conf`; if bad, re-flash (enrollment sentinel gates re-enroll; `rm /var/lib/subterra/enrolled` to force) |
+| Pi never appears in `list-nodes` | `journalctl -u first-boot` on Pi; `tailscale status` | Auth key expired / wrong; school firewall blocking outbound HTTPS |
+| Node shows online but Zabbix can't reach a school device | `subterra-admin routes <slug>` — is the real subnet approved? | Route not auto-approved (non-RFC1918) — approve manually: `subterra-admin approve-route <node-id> <cidr>` |
+| `tailscale ssh` denied | ACL doesn't grant your email to `group:ops`, or destination tag missing | Edit `/etc/headscale/acl.hujson` + reload |
+| Tunnel flaps intermittently | `tailscale netcheck` on the node — UDP path vs DERP fallback | Common on restrictive school WiFi; DERP fallback on TCP/443 handles it |
+| Headscale won't start after reboot | `journalctl -u headscale -e` | Most commonly ACME cert expired; check ports 80/443 still forwarded + DNS correct |
 
-## 7. Building the image
+## 9. Building a new image
 
-```bash
+```
 cd subterra-pi-image
-./image/build.sh         # reuses pi-gen clone
-./image/build.sh --clean # from-scratch build
+./image/build.sh          # reuses pi-gen clone
+./image/build.sh --clean  # from scratch
 ```
 
-Requires Docker on the build host. Output lands in `./deploy/` as `*.img.xz`. Flash with `rpi-imager` or `dd` to the NVMe on a M.2 USB dock.
+Output in `./deploy/*.img.xz`. Flash to NVMe via USB M.2 dock.
 
-## 8. End-to-end verification (pre-production)
+## 10. End-to-end verification (before first production ship)
 
-Run before shipping the first real school Pi. Nine steps:
+1. Coordinator up, `curl https://hub.subterra.one/health` returns 200 from the public internet.
+2. Test Pi flashed, bench PoE+ + test school LAN, cold boot to `list-nodes` presence in <120 s.
+3. From a Zabbix VM in the test district: ping a real device IP at the school. Should resolve through the subnet route.
+4. **PoE-cycle 20×.** Filesystem clean, tailnet re-establishes automatically via PersistentKeepalive equivalent.
+5. **Flaky-link recovery.** Block outbound UDP/41641 on the test firewall for 5 min; Tailscale falls back to DERP/TCP-443. Unblock; direct path resumes.
+6. **Two districts, overlapping real subnets.** Two test districts both using `192.168.1.0/24`. Each Zabbix VM reaches its own district's hosts without cross-contamination (ACL + per-user subnet routing).
+7. **ACL revoke test.** Delete a node via `subterra-admin delete-node`; its connection drops in seconds.
+8. **Ops SSH test.** `tailscale ssh subterra@<pi-hostname>` from the ops laptop works; denied for an ops-not-in-group user.
 
-1. **Concentrator up.** Fresh VM, `setup.sh`, confirm `systemctl status enrollment.service wg-quick@wg0.service` both green. `curl -fsS https://hub:8443/healthz` returns `{"status":"ok"}` from the public internet.
-2. **Image builds clean.** `./image/build.sh --clean` produces a `.img.xz` without errors.
-3. **Cold-boot-to-pending in <120 s.** Flash one test Pi. Plug into bench PoE + test LAN. Time from PoE-on to the enrollment appearing in `list-pending`. Must be <120 s.
-4. **Approved tunnel carries traffic.** Approve. From the Zabbix server: `ping`, `snmpwalk`, and `curl` against a test device via its virtual IP. Use `tcpdump` on the Pi's `eth0` to confirm rewritten (real) IPs. Use `tcpdump` on `wg0` to confirm virtual IPs.
-5. **PoE-cycle 20×.** Via the switch: `no power inline` / `power inline` on the port, 10–60 s between cycles. After each cycle: `dmesg | grep -iE 'ext4|ata|error'` should be clean; tunnel re-establishes within 60 s; heartbeat resumes in journal.
-6. **Flaky-link recovery.** Block UDP/51820 on the bench firewall for 5 min, unblock. Tunnel self-recovers via `PersistentKeepalive` — no intervention.
-7. **Overlap test.** Stand up a second test Pi on an identical real LAN (`192.168.1.0/24`). Confirm Zabbix can address both schools' devices via their distinct virtual `/16`s with no collision.
-8. **Proxy flip.** On one test Pi: `systemctl enable --now zabbix-proxy`. Confirm it registers with the Zabbix server over the tunnel and pushes data. Then `systemctl disable --now zabbix-proxy`; confirm direct polling still works.
-9. **Revocation.** `subterra-hub revoke <serial>` on the hub. Confirm `wg syncconf` removed the peer within 5 s (`wg show wg0` no longer lists it); Pi still retries but never handshakes.
+## 11. Running the test suites
 
-## 9. Running the test suites
-
-Both repos ship integration tests that exercise the code without touching the system network stack.
-
-```bash
-# Hub unit + enrollment e2e:
+```
+# Hub smoke (downloads headscale v0.28 binary, runs in /tmp):
 cd subterra-wg-hub
-.venv/bin/python tests/test_enroll_flow.py
+./tests/test_hub_smoke.sh
 
-# Pi-side script against a running hub (both repos on the same host):
+# Pi DRY_RUN:
 cd subterra-pi-image
 python3 tests/test_enroll_integration.py
 ```
 
-Both must print `OK:` on success. Run before every release.
+Both should print `OK:` on success. Run before every release.
+
+## 12. Backups
+
+Back up these on the coordinator:
+
+- `/var/lib/headscale/db.sqlite` — tailnet state
+- `/var/lib/headscale/noise_private.key` — server identity
+- `/etc/headscale/acl.hujson` — policy
+- `/etc/headscale/config.yaml` — server config
+
+Nightly `sqlite3 db.sqlite .dump > /backup/$(date +%F).sql` off-host is enough. Losing the DB means every node has to re-register; losing the noise key means nodes can't verify the server.
