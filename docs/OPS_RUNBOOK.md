@@ -15,7 +15,7 @@ Target: a fresh Debian 12+ VM with a public IPv4 address.
 
 1. Provision the VM: 2 vCPU, 2 GB RAM, 20 GB disk. Open UDP/51820 and TCP/8443 on the provider firewall. TCP/22 only from the ops management CIDR.
 2. `git clone <hub-repo> /opt/subterra-hub-src` on the VM.
-3. `sudo /opt/subterra-hub-src/setup.sh` — writes `/etc/subterra-hub/setup.env` and exits. Edit that file to fill in `ZABBIX_IP`, `MGMT_CIDR`, `WG_ENDPOINT`, then re-run `sudo /opt/subterra-hub-src/setup.sh`.
+3. `sudo /opt/subterra-hub-src/setup.sh` — writes `/etc/subterra-hub/setup.env` and exits. Edit that file to fill in `MONITORING_CIDR` (e.g. `10.10.99.0/28` — the block your Zabbix VMs live in), `MGMT_CIDR`, `WG_ENDPOINT`, then re-run `sudo /opt/subterra-hub-src/setup.sh`.
 4. At the end, setup prints the hub's WG public key. Record it — it's also at `/etc/wireguard/hub.pubkey`.
 5. Point DNS for `WG_ENDPOINT` at the VM's public IP. Verify reachability:
    ```
@@ -23,7 +23,7 @@ Target: a fresh Debian 12+ VM with a public IPv4 address.
    curl -sSf https://hub.example.com:8443/healthz
    ```
 6. Add a route on the DC core for `10.200.0.0/16` and for each allocated per-school virtual `/16` (`10.100.0.0/16` through `10.199.0.0/16`) pointing at the concentrator. Zabbix server must be able to reach those via the concentrator.
-7. Lock down: the concentrator's FORWARD chain only allows the Zabbix IP. Add other hosts explicitly in `firewall/iptables.rules` if needed.
+7. Lock down: the concentrator's FORWARD chain only allows `MONITORING_CIDR`. Every Zabbix VM that needs school access must live inside that CIDR. Scaling out: add a new Zabbix VM on an IP inside `MONITORING_CIDR` — no concentrator edits required.
 
 ## 2. Per-school onboarding
 
