@@ -1,0 +1,23 @@
+# pi-gen configuration for subterra-pi
+# Sourced by pi-gen build.sh.
+
+IMG_NAME="subterra-pi"
+RELEASE=bookworm
+TARGET_HOSTNAME=subterra-pi
+ARCH=arm64
+FIRST_USER_NAME=subterra
+FIRST_USER_PASS=
+DISABLE_FIRST_BOOT_USER_RENAME=1
+ENABLE_SSH=1
+LOCALE_DEFAULT=en_US.UTF-8
+TIMEZONE_DEFAULT=Etc/UTC
+KEYBOARD_KEYMAP=us
+KEYBOARD_LAYOUT="English (US)"
+WPA_COUNTRY=US
+
+# Stages we actually want in the lite output.
+STAGE_LIST="stage0 stage1 stage2 stage-subterra"
+
+# Skip image export from stage2; let stage-subterra produce the final image.
+DEPLOY_COMPRESSION=xz
+COMPRESSION_LEVEL=6
