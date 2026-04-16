@@ -1,7 +1,7 @@
 [Unit]
 Description=Subterra tunnel heartbeat
 After=wg-quick@wg0.service
-Requires=wg-quick@wg0.service
+Wants=wg-quick@wg0.service
 
 [Service]
 Type=oneshot
