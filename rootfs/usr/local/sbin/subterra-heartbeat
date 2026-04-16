@@ -1,14 +1,24 @@
 #!/usr/bin/env bash
+# Ping at least one Zabbix VM peer's tunnel IP to log tunnel health.
+# Reads peers from /var/lib/subterra/enrollment.json.
 set -euo pipefail
 
-# Ping the concentrator tunnel IP; log result to journal.
-# Full implementation in task #6.
+STATE_DIR="${SUBTERRA_STATE_DIR:-/var/lib/subterra}"
+META="${STATE_DIR}/enrollment.json"
 
-HUB_TUNNEL_IP=10.200.0.1
+[[ -s "${META}" ]] || { echo "heartbeat: no enrollment.json yet" >&2; exit 0; }
 
-if ping -c1 -W2 "${HUB_TUNNEL_IP}" >/dev/null 2>&1; then
-    echo "heartbeat ok ${HUB_TUNNEL_IP}"
-else
-    echo "heartbeat FAIL ${HUB_TUNNEL_IP}" >&2
-    exit 1
-fi
+mapfile -t TARGETS < <(jq -r '.peers[].tunnel_ip | sub("/.*"; "")' "${META}")
+(( ${#TARGETS[@]} > 0 )) || { echo "heartbeat: no peers" >&2; exit 1; }
+
+ok=0
+for ip in "${TARGETS[@]}"; do
+    if ping -c1 -W2 "${ip}" >/dev/null 2>&1; then
+        echo "heartbeat ok ${ip}"
+        ok=1
+    else
+        echo "heartbeat FAIL ${ip}" >&2
+    fi
+done
+
+(( ok == 1 )) || exit 1

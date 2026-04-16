@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# First-boot enrollment for a Subterra Pi.
-# Phones home, fetches WG config + virtual subnet allocation, installs NETMAP,
-# brings up wg0. Retries forever on transient failure.
+# First-boot enrollment for a Subterra Pi (per-district model).
+# Phones home, receives a multi-peer WG config (one peer per Zabbix VM in
+# the district), brings up wg0, MASQUERADEs tunnel-sourced traffic out the
+# LAN interface. No virtual subnets, no NETMAP — real IPs end-to-end.
 set -euo pipefail
 
-# Paths (overridable for testing).
 STATE_DIR="${SUBTERRA_STATE_DIR:-/var/lib/subterra}"
 WG_DIR="${SUBTERRA_WG_DIR:-/etc/wireguard}"
 ENROLL_CONFIG="${SUBTERRA_ENROLL_CONFIG:-/boot/firmware/subterra-enroll.json}"
@@ -18,9 +18,7 @@ PUBKEY_FILE="${WG_DIR}/publickey"
 ENROLL_META="${STATE_DIR}/enrollment.json"
 
 LOG_TAG=subterra-enroll
-log() {
-    printf '%s: %s\n' "${LOG_TAG}" "$*" >&2
-}
+log() { printf '%s: %s\n' "${LOG_TAG}" "$*" >&2; }
 die() { log "FATAL: $*"; exit 1; }
 priv() {
     if [[ "${DRY_RUN}" = "1" ]]; then
@@ -116,57 +114,32 @@ while true; do
     sleep "${delay}"
 done
 
-HUB_PUB="$(jq -r '.wg_server_pubkey' <<<"${RESP}")"
-HUB_EP="$(jq -r '.wg_endpoint' <<<"${RESP}")"
-TUNNEL_IP="$(jq -r '.assigned_tunnel_ip' <<<"${RESP}")"
-VIRTUAL_SUBNET="$(jq -r '.virtual_subnet' <<<"${RESP}")"
 HOSTNAME_NEW="$(jq -r '.hostname' <<<"${RESP}")"
+TUNNEL_IP="$(jq -r '.assigned_tunnel_ip' <<<"${RESP}")"
+DISTRICT_SUBNET="$(jq -r '.district_subnet' <<<"${RESP}")"
 KEEPALIVE="$(jq -r '.persistent_keepalive // 25' <<<"${RESP}")"
+PEER_COUNT="$(jq '.peers | length' <<<"${RESP}")"
 
-for v in "${HUB_PUB}" "${HUB_EP}" "${TUNNEL_IP}" "${VIRTUAL_SUBNET}" "${HOSTNAME_NEW}"; do
+for v in "${HOSTNAME_NEW}" "${TUNNEL_IP}" "${DISTRICT_SUBNET}"; do
     [[ -n "${v}" && "${v}" != "null" ]] || die "incomplete enrollment response: ${RESP}"
 done
+[[ "${PEER_COUNT}" -gt 0 ]] || die "enrollment response has no peers: ${RESP}"
 
 PRIV_CONTENT="$(cat "${PRIVKEY}")"
 (
     umask 077
-    cat > "${WG_CONF}" <<EOF
-[Interface]
-Address = ${TUNNEL_IP}
-PrivateKey = ${PRIV_CONTENT}
-
-[Peer]
-PublicKey = ${HUB_PUB}
-Endpoint = ${HUB_EP}
-AllowedIPs = 10.200.0.0/16
-PersistentKeepalive = ${KEEPALIVE}
-EOF
+    {
+        echo "[Interface]"
+        echo "Address = ${TUNNEL_IP}"
+        echo "PrivateKey = ${PRIV_CONTENT}"
+        echo
+        jq -r --arg ka "${KEEPALIVE}" '.peers[] |
+            "[Peer]\nPublicKey = \(.pubkey)\nEndpoint = \(.endpoint)\nAllowedIPs = \(.tunnel_ip)\nPersistentKeepalive = \($ka)\n"
+        ' <<<"${RESP}"
+    } > "${WG_CONF}"
 )
 
 priv hostnamectl set-hostname "${HOSTNAME_NEW}"
-
-install_netmap_pair() {
-    local virtual_slice="$1" real="$2"
-    priv iptables -t nat -A PREROUTING -i wg0 -d "${virtual_slice}" \
-        -j NETMAP --to "${real}"
-    log "NETMAP ${virtual_slice} -> ${real}"
-}
-
-REAL_SUBNETS=()
-while IFS= read -r real; do
-    REAL_SUBNETS+=("${real}")
-done < <(jq -r '.real_subnets[]' <<<"${RESP}")
-
-MAPPING_COUNT="$(jq '.subnet_mappings | length' <<<"${RESP}")"
-if [[ "${MAPPING_COUNT}" -eq 0 ]]; then
-    log "WARN: hub returned no subnet_mappings — no NETMAP rules installed"
-fi
-
-while IFS= read -r pair; do
-    virtual_slice="$(jq -r '.virtual' <<<"${pair}")"
-    real="$(jq -r '.real' <<<"${pair}")"
-    install_netmap_pair "${virtual_slice}" "${real}"
-done < <(jq -c '.subnet_mappings[]' <<<"${RESP}")
 
 priv iptables -t nat -A POSTROUTING -o "${LAN_IFACE}" -j MASQUERADE
 
@@ -181,14 +154,12 @@ fi
 jq -n \
     --arg hostname "${HOSTNAME_NEW}" \
     --arg tunnel_ip "${TUNNEL_IP}" \
-    --arg virtual_subnet "${VIRTUAL_SUBNET}" \
-    --arg hub_endpoint "${HUB_EP}" \
+    --arg district_subnet "${DISTRICT_SUBNET}" \
     --arg enrolled_at "$(date -u +%FT%TZ)" \
-    --argjson real_subnets "$(printf '%s\n' "${REAL_SUBNETS[@]}" | jq -R . | jq -s .)" \
-    --argjson subnet_mappings "$(jq '.subnet_mappings' <<<"${RESP}")" \
-    '{hostname:$hostname, tunnel_ip:$tunnel_ip, virtual_subnet:$virtual_subnet,
-      hub_endpoint:$hub_endpoint, real_subnets:$real_subnets,
-      subnet_mappings:$subnet_mappings, enrolled_at:$enrolled_at}' \
+    --argjson real_subnets "$(jq '.real_subnets' <<<"${RESP}")" \
+    --argjson peers "$(jq '.peers' <<<"${RESP}")" \
+    '{hostname:$hostname, tunnel_ip:$tunnel_ip, district_subnet:$district_subnet,
+      real_subnets:$real_subnets, peers:$peers, enrolled_at:$enrolled_at}' \
     > "${ENROLL_META}"
 
 priv systemctl enable --now wg-quick@wg0.service
@@ -198,7 +169,7 @@ touch "${ENROLL_SENTINEL}"
 rm -f "${ENROLL_CONFIG}"
 sync
 
-log "enrollment complete for ${HOSTNAME_NEW}"
+log "enrollment complete for ${HOSTNAME_NEW} (${PEER_COUNT} peer(s))"
 
 if [[ "${DRY_RUN}" != "1" ]]; then
     log "rebooting to verify clean boot"
