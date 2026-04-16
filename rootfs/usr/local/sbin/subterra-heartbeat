@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Ping the concentrator tunnel IP; log result to journal.
+# Full implementation in task #6.
+
+HUB_TUNNEL_IP=10.200.0.1
+
+if ping -c1 -W2 "${HUB_TUNNEL_IP}" >/dev/null 2>&1; then
+    echo "heartbeat ok ${HUB_TUNNEL_IP}"
+else
+    echo "heartbeat FAIL ${HUB_TUNNEL_IP}" >&2
+    exit 1
+fi

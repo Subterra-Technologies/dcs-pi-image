@@ -1,0 +1,7 @@
+work/
+deploy/
+*.img
+*.img.xz
+pi-gen/
+rpi-image-gen/
+*.log

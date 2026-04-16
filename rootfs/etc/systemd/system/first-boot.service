@@ -1,0 +1,16 @@
+[Unit]
+Description=Subterra first-boot enrollment
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=!/var/lib/subterra/enrolled
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/subterra-enroll
+StandardOutput=journal
+StandardError=journal
+Restart=on-failure
+RestartSec=30s
+
+[Install]
+WantedBy=multi-user.target

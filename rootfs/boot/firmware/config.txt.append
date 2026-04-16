@@ -1,0 +1,9 @@
+# === Subterra additions ===
+# Enable hardware watchdog (BCM2712 on Pi 5)
+dtparam=watchdog=on
+
+# PoE+ HAT fan controller (in-tree driver)
+dtoverlay=rpi-poe-plus
+
+# Suppress warning overlay on HDMI-less units
+avoid_warnings=1

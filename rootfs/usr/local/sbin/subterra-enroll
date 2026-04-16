@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# First-boot enrollment script.
+# Full implementation lands in task #5.
+
+STATE_DIR=/var/lib/subterra
+ENROLL_SENTINEL="${STATE_DIR}/enrolled"
+ENROLL_CONFIG=/boot/firmware/subterra-enroll.json
+WG_DIR=/etc/wireguard
+
+if [[ -f "${ENROLL_SENTINEL}" ]]; then
+    echo "already enrolled, exiting"
+    exit 0
+fi
+
+echo "subterra-enroll stub — not yet implemented"
+exit 1

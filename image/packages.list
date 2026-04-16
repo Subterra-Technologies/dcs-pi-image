@@ -1,0 +1,13 @@
+wireguard
+wireguard-tools
+iptables
+iptables-persistent
+ufw
+unattended-upgrades
+apt-listchanges
+chrony
+curl
+jq
+ca-certificates
+zabbix-proxy-sqlite3
+watchdog
