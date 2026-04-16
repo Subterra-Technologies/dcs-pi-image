@@ -1,18 +1,211 @@
 #!/usr/bin/env bash
+# First-boot enrollment for a Subterra Pi.
+# Phones home, fetches WG config + virtual subnet allocation, installs NETMAP,
+# brings up wg0. Retries forever on transient failure.
 set -euo pipefail
 
-# First-boot enrollment script.
-# Full implementation lands in task #5.
+# Paths (overridable for testing).
+STATE_DIR="${SUBTERRA_STATE_DIR:-/var/lib/subterra}"
+WG_DIR="${SUBTERRA_WG_DIR:-/etc/wireguard}"
+ENROLL_CONFIG="${SUBTERRA_ENROLL_CONFIG:-/boot/firmware/subterra-enroll.json}"
+IPTABLES_PERSIST_DIR="${SUBTERRA_IPTABLES_DIR:-/etc/iptables}"
+DRY_RUN="${SUBTERRA_DRY_RUN:-0}"
 
-STATE_DIR=/var/lib/subterra
 ENROLL_SENTINEL="${STATE_DIR}/enrolled"
-ENROLL_CONFIG=/boot/firmware/subterra-enroll.json
-WG_DIR=/etc/wireguard
+WG_CONF="${WG_DIR}/wg0.conf"
+PRIVKEY="${WG_DIR}/privatekey"
+PUBKEY_FILE="${WG_DIR}/publickey"
+ENROLL_META="${STATE_DIR}/enrollment.json"
+
+LOG_TAG=subterra-enroll
+log() {
+    printf '%s: %s\n' "${LOG_TAG}" "$*" >&2
+}
+die() { log "FATAL: $*"; exit 1; }
+priv() {
+    if [[ "${DRY_RUN}" = "1" ]]; then
+        log "DRY: $*"
+    else
+        "$@"
+    fi
+}
 
 if [[ -f "${ENROLL_SENTINEL}" ]]; then
-    echo "already enrolled, exiting"
+    log "already enrolled, exiting"
     exit 0
 fi
 
-echo "subterra-enroll stub — not yet implemented"
-exit 1
+mkdir -p "${STATE_DIR}"
+mkdir -p "${WG_DIR}"
+chmod 700 "${WG_DIR}"
+
+[[ -f "${ENROLL_CONFIG}" ]] || die "no enrollment config at ${ENROLL_CONFIG}"
+
+ENROLL_TOKEN="$(jq -r '.enroll_token // empty' "${ENROLL_CONFIG}")"
+ENROLL_URL="$(jq -r '.enrollment_url // empty' "${ENROLL_CONFIG}")"
+CANDIDATE_SUBNETS_JSON="$(jq -c '.candidate_subnets // []' "${ENROLL_CONFIG}")"
+
+[[ -n "${ENROLL_TOKEN}" ]] || die "enroll_token missing from ${ENROLL_CONFIG}"
+[[ -n "${ENROLL_URL}" ]] || die "enrollment_url missing from ${ENROLL_CONFIG}"
+
+if [[ ! -s "${PRIVKEY}" ]]; then
+    log "generating WireGuard keypair"
+    ( umask 077 && wg genkey > "${PRIVKEY}" )
+    wg pubkey < "${PRIVKEY}" > "${PUBKEY_FILE}"
+fi
+PUB="$(tr -d '\n' < "${PUBKEY_FILE}")"
+
+if [[ -r /sys/firmware/devicetree/base/serial-number ]]; then
+    SERIAL="$(tr -d '\0' < /sys/firmware/devicetree/base/serial-number)"
+else
+    SERIAL="${SUBTERRA_SERIAL:-unknown-$(hostname)}"
+fi
+
+detect_primary_subnet() {
+    local iface cidr
+    iface="$(ip -o -4 route show default 2>/dev/null | awk '{print $5; exit}')"
+    [[ -n "${iface}" ]] || return 1
+    cidr="$(ip -o -4 addr show dev "${iface}" 2>/dev/null | awk '{print $4; exit}')"
+    [[ -n "${cidr}" ]] || return 1
+    python3 -c "
+import ipaddress, sys
+print(ipaddress.ip_interface(sys.argv[1]).network.with_prefixlen)
+" "${cidr}"
+}
+
+if PRIMARY_SUBNET="$(detect_primary_subnet)"; then
+    log "detected primary subnet: ${PRIMARY_SUBNET}"
+else
+    log "WARN: could not auto-detect primary subnet"
+    PRIMARY_SUBNET=""
+fi
+
+SUBNETS_JSON="$(
+    jq -n \
+        --arg primary "${PRIMARY_SUBNET}" \
+        --argjson extras "${CANDIDATE_SUBNETS_JSON}" \
+        '($extras + (if $primary == "" then [] else [$primary] end)) | unique'
+)"
+log "subnets to advertise: ${SUBNETS_JSON}"
+
+LAN_IFACE="$(ip -o -4 route show default 2>/dev/null | awk '{print $5; exit}')"
+LAN_IFACE="${LAN_IFACE:-eth0}"
+
+REQ_BODY="$(jq -c -n \
+    --arg serial "${SERIAL}" \
+    --arg pubkey "${PUB}" \
+    --arg token "${ENROLL_TOKEN}" \
+    --argjson subnets "${SUBNETS_JSON}" \
+    '{serial:$serial, pubkey:$pubkey, enroll_token:$token, detected_subnets:$subnets}'
+)"
+
+attempt=0
+while true; do
+    attempt=$((attempt + 1))
+    if RESP="$(curl -sS --fail --max-time 30 \
+        -H 'Content-Type: application/json' \
+        --data-raw "${REQ_BODY}" \
+        "${ENROLL_URL%/}/v1/enroll" 2>/tmp/subterra-enroll.err)"; then
+        log "enrollment response received (attempt ${attempt})"
+        break
+    fi
+    err="$(cat /tmp/subterra-enroll.err 2>/dev/null || true)"
+    delay=$(( attempt < 10 ? (1 << attempt) : 900 ))
+    [[ ${delay} -gt 900 ]] && delay=900
+    log "enroll POST failed (attempt ${attempt}): ${err}; retry in ${delay}s"
+    sleep "${delay}"
+done
+
+HUB_PUB="$(jq -r '.wg_server_pubkey' <<<"${RESP}")"
+HUB_EP="$(jq -r '.wg_endpoint' <<<"${RESP}")"
+TUNNEL_IP="$(jq -r '.assigned_tunnel_ip' <<<"${RESP}")"
+VIRTUAL_SUBNET="$(jq -r '.virtual_subnet' <<<"${RESP}")"
+HOSTNAME_NEW="$(jq -r '.hostname' <<<"${RESP}")"
+KEEPALIVE="$(jq -r '.persistent_keepalive // 25' <<<"${RESP}")"
+
+for v in "${HUB_PUB}" "${HUB_EP}" "${TUNNEL_IP}" "${VIRTUAL_SUBNET}" "${HOSTNAME_NEW}"; do
+    [[ -n "${v}" && "${v}" != "null" ]] || die "incomplete enrollment response: ${RESP}"
+done
+
+PRIV_CONTENT="$(cat "${PRIVKEY}")"
+(
+    umask 077
+    cat > "${WG_CONF}" <<EOF
+[Interface]
+Address = ${TUNNEL_IP}
+PrivateKey = ${PRIV_CONTENT}
+
+[Peer]
+PublicKey = ${HUB_PUB}
+Endpoint = ${HUB_EP}
+AllowedIPs = 10.200.0.0/16
+PersistentKeepalive = ${KEEPALIVE}
+EOF
+)
+
+priv hostnamectl set-hostname "${HOSTNAME_NEW}"
+
+VIRTUAL_BASE="$(python3 -c "
+import ipaddress, sys
+n = ipaddress.ip_network(sys.argv[1])
+octs = n.network_address.exploded.split('.')
+print(f'{octs[0]}.{octs[1]}')
+" "${VIRTUAL_SUBNET}")"
+
+install_netmap_pair() {
+    local virtual_slice="$1" real="$2"
+    priv iptables -t nat -A PREROUTING -i wg0 -d "${virtual_slice}" \
+        -j NETMAP --to "${real}"
+    log "NETMAP ${virtual_slice} -> ${real}"
+}
+
+REAL_SUBNETS=()
+while IFS= read -r real; do
+    REAL_SUBNETS+=("${real}")
+done < <(jq -r '.real_subnets[]' <<<"${RESP}")
+
+for real in "${REAL_SUBNETS[@]}"; do
+    if [[ "${real}" != */24 ]]; then
+        log "WARN: ${real} is not /24; skipping NETMAP (configure manually)"
+        continue
+    fi
+    third="${real#*.*.}"
+    third="${third%%.*}"
+    virtual_slice="${VIRTUAL_BASE}.${third}.0/24"
+    install_netmap_pair "${virtual_slice}" "${real}"
+done
+
+priv iptables -t nat -A POSTROUTING -o "${LAN_IFACE}" -j MASQUERADE
+
+mkdir -p "${IPTABLES_PERSIST_DIR}"
+if [[ "${DRY_RUN}" = "1" ]]; then
+    log "DRY: would iptables-save -> ${IPTABLES_PERSIST_DIR}/rules.v4"
+else
+    iptables-save > "${IPTABLES_PERSIST_DIR}/rules.v4"
+    ip6tables-save > "${IPTABLES_PERSIST_DIR}/rules.v6" 2>/dev/null || true
+fi
+
+jq -n \
+    --arg hostname "${HOSTNAME_NEW}" \
+    --arg tunnel_ip "${TUNNEL_IP}" \
+    --arg virtual_subnet "${VIRTUAL_SUBNET}" \
+    --arg hub_endpoint "${HUB_EP}" \
+    --arg enrolled_at "$(date -u +%FT%TZ)" \
+    --argjson real_subnets "$(printf '%s\n' "${REAL_SUBNETS[@]}" | jq -R . | jq -s .)" \
+    '{hostname:$hostname, tunnel_ip:$tunnel_ip, virtual_subnet:$virtual_subnet,
+      hub_endpoint:$hub_endpoint, real_subnets:$real_subnets, enrolled_at:$enrolled_at}' \
+    > "${ENROLL_META}"
+
+priv systemctl enable --now wg-quick@wg0.service
+priv systemctl enable --now subterra-heartbeat.timer
+
+touch "${ENROLL_SENTINEL}"
+rm -f "${ENROLL_CONFIG}"
+sync
+
+log "enrollment complete for ${HOSTNAME_NEW}"
+
+if [[ "${DRY_RUN}" != "1" ]]; then
+    log "rebooting to verify clean boot"
+    systemctl reboot
+fi
