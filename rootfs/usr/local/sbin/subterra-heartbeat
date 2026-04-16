@@ -1,24 +1,23 @@
 #!/usr/bin/env bash
-# Ping at least one Zabbix VM peer's tunnel IP to log tunnel health.
-# Reads peers from /var/lib/subterra/enrollment.json.
+# Log tailnet connection health so journal shows when we flap.
 set -euo pipefail
 
-STATE_DIR="${SUBTERRA_STATE_DIR:-/var/lib/subterra}"
-META="${STATE_DIR}/enrollment.json"
+if ! command -v tailscale >/dev/null 2>&1; then
+    echo "tailscale not installed yet" >&2
+    exit 1
+fi
 
-[[ -s "${META}" ]] || { echo "heartbeat: no enrollment.json yet" >&2; exit 0; }
+STATUS_JSON="$(tailscale status --json 2>/dev/null || true)"
+if [[ -z "${STATUS_JSON}" ]]; then
+    echo "tailscale status unavailable" >&2
+    exit 1
+fi
 
-mapfile -t TARGETS < <(jq -r '.peers[].tunnel_ip | sub("/.*"; "")' "${META}")
-(( ${#TARGETS[@]} > 0 )) || { echo "heartbeat: no peers" >&2; exit 1; }
+backend="$(jq -r '.BackendState // "Unknown"' <<<"${STATUS_JSON}")"
+self_ip="$(jq -r '.Self.TailscaleIPs[0] // "n/a"' <<<"${STATUS_JSON}")"
 
-ok=0
-for ip in "${TARGETS[@]}"; do
-    if ping -c1 -W2 "${ip}" >/dev/null 2>&1; then
-        echo "heartbeat ok ${ip}"
-        ok=1
-    else
-        echo "heartbeat FAIL ${ip}" >&2
-    fi
-done
-
-(( ok == 1 )) || exit 1
+if [[ "${backend}" != "Running" ]]; then
+    echo "heartbeat FAIL backend=${backend}" >&2
+    exit 1
+fi
+echo "heartbeat ok backend=${backend} ip=${self_ip}"

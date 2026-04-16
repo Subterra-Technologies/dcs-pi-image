@@ -1,20 +1,17 @@
 #!/usr/bin/env bash
-# First-boot enrollment for a Subterra Pi (per-district model).
-# Phones home, receives a multi-peer WG config (one peer per Zabbix VM in
-# the district), brings up wg0, MASQUERADEs tunnel-sourced traffic out the
-# LAN interface. No virtual subnets, no NETMAP — real IPs end-to-end.
+# First-boot enrollment for a Subterra Pi (Headscale/Tailscale model).
+#
+# Reads the pre-auth key from /boot/firmware/subterra-enroll.json, joins
+# the tailnet, advertises the district's school-LAN subnets. No raw
+# WireGuard, no NETMAP, no MASQUERADE — Tailscale subnet-routing + ACL
+# auto-approvers handle all of that.
 set -euo pipefail
 
 STATE_DIR="${SUBTERRA_STATE_DIR:-/var/lib/subterra}"
-WG_DIR="${SUBTERRA_WG_DIR:-/etc/wireguard}"
 ENROLL_CONFIG="${SUBTERRA_ENROLL_CONFIG:-/boot/firmware/subterra-enroll.json}"
-IPTABLES_PERSIST_DIR="${SUBTERRA_IPTABLES_DIR:-/etc/iptables}"
 DRY_RUN="${SUBTERRA_DRY_RUN:-0}"
 
 ENROLL_SENTINEL="${STATE_DIR}/enrolled"
-WG_CONF="${WG_DIR}/wg0.conf"
-PRIVKEY="${WG_DIR}/privatekey"
-PUBKEY_FILE="${WG_DIR}/publickey"
 ENROLL_META="${STATE_DIR}/enrollment.json"
 
 LOG_TAG=subterra-enroll
@@ -34,31 +31,21 @@ if [[ -f "${ENROLL_SENTINEL}" ]]; then
 fi
 
 mkdir -p "${STATE_DIR}"
-mkdir -p "${WG_DIR}"
-chmod 700 "${WG_DIR}"
 
 [[ -f "${ENROLL_CONFIG}" ]] || die "no enrollment config at ${ENROLL_CONFIG}"
 
-ENROLL_TOKEN="$(jq -r '.enroll_token // empty' "${ENROLL_CONFIG}")"
-ENROLL_URL="$(jq -r '.enrollment_url // empty' "${ENROLL_CONFIG}")"
-CANDIDATE_SUBNETS_JSON="$(jq -c '.candidate_subnets // []' "${ENROLL_CONFIG}")"
+AUTHKEY="$(jq -r '.authkey // empty' "${ENROLL_CONFIG}")"
+COORDINATOR="$(jq -r '.coordinator // empty' "${ENROLL_CONFIG}")"
+DISTRICT="$(jq -r '.district // empty' "${ENROLL_CONFIG}")"
+ADVERTISE_ROUTES="$(jq -r '.advertise_routes // [] | join(",")' "${ENROLL_CONFIG}")"
+HOSTNAME_HINT="$(jq -r '.hostname // empty' "${ENROLL_CONFIG}")"
 
-[[ -n "${ENROLL_TOKEN}" ]] || die "enroll_token missing from ${ENROLL_CONFIG}"
-[[ -n "${ENROLL_URL}" ]] || die "enrollment_url missing from ${ENROLL_CONFIG}"
+[[ -n "${AUTHKEY}" ]]     || die "authkey missing from ${ENROLL_CONFIG}"
+[[ -n "${COORDINATOR}" ]] || die "coordinator missing from ${ENROLL_CONFIG}"
+[[ -n "${DISTRICT}" ]]    || die "district missing from ${ENROLL_CONFIG}"
 
-if [[ ! -s "${PRIVKEY}" ]]; then
-    log "generating WireGuard keypair"
-    ( umask 077 && wg genkey > "${PRIVKEY}" )
-    wg pubkey < "${PRIVKEY}" > "${PUBKEY_FILE}"
-fi
-PUB="$(tr -d '\n' < "${PUBKEY_FILE}")"
-
-if [[ -r /sys/firmware/devicetree/base/serial-number ]]; then
-    SERIAL="$(tr -d '\0' < /sys/firmware/devicetree/base/serial-number)"
-else
-    SERIAL="${SUBTERRA_SERIAL:-unknown-$(hostname)}"
-fi
-
+# Auto-detect the primary subnet if ops didn't pre-seed one. Merge with
+# whatever they did pre-seed.
 detect_primary_subnet() {
     local iface cidr
     iface="$(ip -o -4 route show default 2>/dev/null | awk '{print $5; exit}')"
@@ -71,105 +58,68 @@ print(ipaddress.ip_interface(sys.argv[1]).network.with_prefixlen)
 " "${cidr}"
 }
 
-if PRIMARY_SUBNET="$(detect_primary_subnet)"; then
-    log "detected primary subnet: ${PRIMARY_SUBNET}"
-else
-    log "WARN: could not auto-detect primary subnet"
-    PRIMARY_SUBNET=""
+PRIMARY=""
+if PRIMARY="$(detect_primary_subnet)"; then
+    log "detected primary subnet: ${PRIMARY}"
 fi
 
-SUBNETS_JSON="$(
-    jq -n \
-        --arg primary "${PRIMARY_SUBNET}" \
-        --argjson extras "${CANDIDATE_SUBNETS_JSON}" \
-        '($extras + (if $primary == "" then [] else [$primary] end)) | unique'
-)"
-log "subnets to advertise: ${SUBNETS_JSON}"
-
-LAN_IFACE="$(ip -o -4 route show default 2>/dev/null | awk '{print $5; exit}')"
-LAN_IFACE="${LAN_IFACE:-eth0}"
-
-REQ_BODY="$(jq -c -n \
-    --arg serial "${SERIAL}" \
-    --arg pubkey "${PUB}" \
-    --arg token "${ENROLL_TOKEN}" \
-    --argjson subnets "${SUBNETS_JSON}" \
-    '{serial:$serial, pubkey:$pubkey, enroll_token:$token, detected_subnets:$subnets}'
-)"
-
-attempt=0
-while true; do
-    attempt=$((attempt + 1))
-    if RESP="$(curl -sS --fail --max-time 30 \
-        -H 'Content-Type: application/json' \
-        --data-raw "${REQ_BODY}" \
-        "${ENROLL_URL%/}/v1/enroll" 2>/tmp/subterra-enroll.err)"; then
-        log "enrollment response received (attempt ${attempt})"
-        break
+# Stitch detected + explicit routes into one comma-separated list.
+if [[ -n "${PRIMARY}" ]]; then
+    if [[ -z "${ADVERTISE_ROUTES}" ]]; then
+        ADVERTISE_ROUTES="${PRIMARY}"
+    elif [[ ",${ADVERTISE_ROUTES}," != *",${PRIMARY},"* ]]; then
+        ADVERTISE_ROUTES="${PRIMARY},${ADVERTISE_ROUTES}"
     fi
-    err="$(cat /tmp/subterra-enroll.err 2>/dev/null || true)"
-    delay=$(( attempt < 10 ? (1 << attempt) : 900 ))
-    [[ ${delay} -gt 900 ]] && delay=900
-    log "enroll POST failed (attempt ${attempt}): ${err}; retry in ${delay}s"
-    sleep "${delay}"
-done
+fi
+log "routes to advertise: ${ADVERTISE_ROUTES:-<none>}"
 
-HOSTNAME_NEW="$(jq -r '.hostname' <<<"${RESP}")"
-TUNNEL_IP="$(jq -r '.assigned_tunnel_ip' <<<"${RESP}")"
-DISTRICT_SUBNET="$(jq -r '.district_subnet' <<<"${RESP}")"
-KEEPALIVE="$(jq -r '.persistent_keepalive // 25' <<<"${RESP}")"
-PEER_COUNT="$(jq '.peers | length' <<<"${RESP}")"
-
-for v in "${HOSTNAME_NEW}" "${TUNNEL_IP}" "${DISTRICT_SUBNET}"; do
-    [[ -n "${v}" && "${v}" != "null" ]] || die "incomplete enrollment response: ${RESP}"
-done
-[[ "${PEER_COUNT}" -gt 0 ]] || die "enrollment response has no peers: ${RESP}"
-
-PRIV_CONTENT="$(cat "${PRIVKEY}")"
-(
-    umask 077
-    {
-        echo "[Interface]"
-        echo "Address = ${TUNNEL_IP}"
-        echo "PrivateKey = ${PRIV_CONTENT}"
-        echo
-        jq -r --arg ka "${KEEPALIVE}" '.peers[] |
-            "[Peer]\nPublicKey = \(.pubkey)\nEndpoint = \(.endpoint)\nAllowedIPs = \(.tunnel_ip)\nPersistentKeepalive = \($ka)\n"
-        ' <<<"${RESP}"
-    } > "${WG_CONF}"
-)
-
+# Hostname = explicit hint, else <district>-<short-serial>
+if [[ -z "${HOSTNAME_HINT}" ]]; then
+    if [[ -n "${SUBTERRA_SERIAL:-}" ]]; then
+        SERIAL_SHORT="${SUBTERRA_SERIAL}"
+    elif [[ -r /sys/firmware/devicetree/base/serial-number ]]; then
+        SERIAL_SHORT="$(tr -d '\0' < /sys/firmware/devicetree/base/serial-number | tail -c 8)"
+    else
+        SERIAL_SHORT="$(hostname)"
+    fi
+    HOSTNAME_NEW="${DISTRICT}-pi-${SERIAL_SHORT}"
+else
+    HOSTNAME_NEW="${HOSTNAME_HINT}"
+fi
 priv hostnamectl set-hostname "${HOSTNAME_NEW}"
 
-priv iptables -t nat -A POSTROUTING -o "${LAN_IFACE}" -j MASQUERADE
-
-mkdir -p "${IPTABLES_PERSIST_DIR}"
-if [[ "${DRY_RUN}" = "1" ]]; then
-    log "DRY: would iptables-save -> ${IPTABLES_PERSIST_DIR}/rules.v4"
-else
-    iptables-save > "${IPTABLES_PERSIST_DIR}/rules.v4"
-    ip6tables-save > "${IPTABLES_PERSIST_DIR}/rules.v6" 2>/dev/null || true
+args=(
+    up
+    --login-server "${COORDINATOR%/}"
+    --authkey "${AUTHKEY}"
+    --hostname "${HOSTNAME_NEW}"
+    --ssh
+    --accept-dns=false
+    --reset
+)
+if [[ -n "${ADVERTISE_ROUTES}" ]]; then
+    args+=(--advertise-routes "${ADVERTISE_ROUTES}")
 fi
 
+log "joining tailnet at ${COORDINATOR}"
+priv tailscale "${args[@]}"
+
+# Record what we did for humans reading the Pi later.
 jq -n \
     --arg hostname "${HOSTNAME_NEW}" \
-    --arg tunnel_ip "${TUNNEL_IP}" \
-    --arg district_subnet "${DISTRICT_SUBNET}" \
+    --arg district "${DISTRICT}" \
+    --arg coordinator "${COORDINATOR}" \
+    --arg routes "${ADVERTISE_ROUTES}" \
     --arg enrolled_at "$(date -u +%FT%TZ)" \
-    --argjson real_subnets "$(jq '.real_subnets' <<<"${RESP}")" \
-    --argjson peers "$(jq '.peers' <<<"${RESP}")" \
-    '{hostname:$hostname, tunnel_ip:$tunnel_ip, district_subnet:$district_subnet,
-      real_subnets:$real_subnets, peers:$peers, enrolled_at:$enrolled_at}' \
+    '{hostname:$hostname, district:$district, coordinator:$coordinator,
+      advertise_routes:$routes, enrolled_at:$enrolled_at}' \
     > "${ENROLL_META}"
-
-priv systemctl enable --now wg-quick@wg0.service
-priv systemctl enable --now subterra-heartbeat.timer
 
 touch "${ENROLL_SENTINEL}"
 rm -f "${ENROLL_CONFIG}"
 sync
 
-log "enrollment complete for ${HOSTNAME_NEW} (${PEER_COUNT} peer(s))"
+log "enrollment complete for ${HOSTNAME_NEW}"
 
 if [[ "${DRY_RUN}" != "1" ]]; then
     log "rebooting to verify clean boot"

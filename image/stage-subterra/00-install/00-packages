@@ -1,5 +1,4 @@
-wireguard
-wireguard-tools
+tailscale
 iptables
 iptables-persistent
 unattended-upgrades
