@@ -17,22 +17,26 @@ Two repos to know:
 
 ## 2. Coordinator install (one time)
 
-1. Fresh Debian 12+ VM. Public IPv4. DNS A record `hub.subterra.one` → that IP.
-2. Edge router port-forwards: TCP/80 (ACME HTTP-01) + TCP/443 (Headscale API + DERP fallback) → this VM.
+Public reachability is via Cloudflare Tunnel — **no edge router port-forwards**. The coordinator has no public inbound ports.
+
+1. Fresh Debian 12+ VM. No public IPv4 required; outbound HTTPS is enough.
+2. In the Cloudflare Zero Trust dashboard: Networks → Tunnels → Create tunnel → Cloudflared. Name it (e.g. `subterra-hub`). Copy the install token. On the Public Hostnames tab, add: Subdomain = `hub`, Domain = `subterra.one`, Type = `HTTP`, URL = `localhost:8080`. DNS is created automatically (CNAME to the tunnel).
 3. On the VM:
    ```
    git clone <subterra-wg-hub repo> /opt/subterra-hub-src
    sudo /opt/subterra-hub-src/setup.sh          # writes template env, exits
-   sudo vi /etc/subterra-hub/setup.env          # set COORDINATOR_HOSTNAME, ACME_EMAIL, OPS_EMAIL
-   sudo /opt/subterra-hub-src/setup.sh          # real install
+   sudo vi /etc/subterra-hub/setup.env          # set COORDINATOR_HOSTNAME,
+                                                #   CLOUDFLARE_TUNNEL_TOKEN,
+                                                #   OPS_EMAIL, MGMT_CIDR
+   sudo /opt/subterra-hub-src/setup.sh          # real install; installs cloudflared too
    ```
 4. Verify:
    ```
-   sudo systemctl status headscale
+   sudo systemctl status headscale cloudflared subterra-dashboard
    sudo subterra-admin list-districts            # empty, but no error
-   curl -fsS https://hub.subterra.one/health    # should be 200
+   curl -fsS https://hub.subterra.one/health    # should be 200, via Cloudflare
    ```
-   If ACME fails, check ports 80+443 reachable and DNS correct.
+   If the public hostname 5xx's, `systemctl status cloudflared` + `journalctl -u cloudflared -e`. If cloudflared is up but 502, check the Public Hostname mapping in Cloudflare (URL = `localhost:8080`).
 
 ## 3. Onboarding a new district
 
@@ -46,9 +50,11 @@ All commands run on the coordinator VM as an admin with sudo access.
 
 2. **Issue a pre-auth key for the Pi.**
    ```
-   sudo subterra-admin issue-token <slug> pi --expiration 14d
+   sudo subterra-admin issue-token <slug> pi              # default 3d
+   # or, for longer pre-ship windows:
+   sudo subterra-admin issue-token <slug> pi --expiration 7d
    ```
-   Raw `hskey-auth-...` string is printed. Capture it — only chance to see it.
+   Raw `hskey-auth-...` string is printed. Capture it — only chance to see it. Default expiration is 3 days (was 14d until commit `92fbb01`).
 
 3. **Drop the key onto a Pi's NVMe.** On the ops flash bench:
    - Flash `subterra-pi-*-lite.img.xz` to a USB-M.2 dock.
@@ -131,9 +137,18 @@ No SSH keys to distribute. ACL governs who can SSH where. Sessions are logged vi
 
 ## 7. Checking fleet health
 
+LAN dashboard from any workstation inside `MGMT_CIDR`:
+
+```
+http://<coordinator>:8081     # summary + per-district table + outstanding keys
+```
+
+CLI on the coordinator:
+
 ```
 sudo subterra-admin list-nodes             # everything in the tailnet
 sudo subterra-admin routes                 # advertised + approved routes
+sudo subterra-admin keys list              # outstanding (unclaimed) pre-auth keys
 sudo headscale nodes list --output json | jq '.[] | {name, online, lastSeen}'
 ```
 
@@ -152,7 +167,9 @@ journalctl -u subterra-heartbeat --since -10m
 | Node shows online but Zabbix can't reach a school device | `subterra-admin routes <slug>` — is the real subnet approved? | Route not auto-approved (non-RFC1918) — approve manually: `subterra-admin approve-route <node-id> <cidr>` |
 | `tailscale ssh` denied | ACL doesn't grant your email to `group:ops`, or destination tag missing | Edit `/etc/headscale/acl.hujson` + reload |
 | Tunnel flaps intermittently | `tailscale netcheck` on the node — UDP path vs DERP fallback | Common on restrictive school WiFi; DERP fallback on TCP/443 handles it |
-| Headscale won't start after reboot | `journalctl -u headscale -e` | Most commonly ACME cert expired; check ports 80/443 still forwarded + DNS correct |
+| Headscale won't start after reboot | `journalctl -u headscale -e` | Config syntax error after upgrade, or SQLite corruption — restore from `/var/backups/subterra-hub` |
+| Public hostname 502s | `systemctl status cloudflared`; `journalctl -u cloudflared -e` | cloudflared down or tunnel token rotated. Re-run `cloudflared service install <TOKEN>` after updating `setup.env`. Note `cert-check` will still pass because Cloudflare's edge cert stays valid |
+| `subterra-cert-check` WARN or FAIL | `journalctl -u subterra-cert-check` | Under Cloudflare Tunnel, Cloudflare owns the cert and it rarely WARN's. If it does, check DNS + Cloudflare hostname config; exit 1 = <14d, exit 2 = endpoint unreachable |
 
 ## 9. Building a new image
 
@@ -178,24 +195,45 @@ Output in `./deploy/*.img.xz`. Flash to NVMe via USB M.2 dock.
 ## 11. Running the test suites
 
 ```
-# Hub smoke (downloads headscale v0.28 binary, runs in /tmp):
+# Hub smoke (headscale v0.28 in /tmp; exercises subterra-admin incl. `keys list`):
 cd subterra-wg-hub
 ./tests/test_hub_smoke.sh
 
+# Backup + restore round-trip (seed → backup → wipe → restore → verify):
+./tests/test_backup_restore.sh
+
+# Dashboard smoke (boots headscale + dashboard in /tmp; hits /, /api/status, /healthz):
+./tests/test_dashboard.sh
+
 # Pi DRY_RUN:
-cd subterra-pi-image
+cd ../subterra-pi-image
 python3 tests/test_enroll_integration.py
 ```
 
-Both should print `OK:` on success. Run before every release.
+All four should print `OK:` on success. Run before every release.
 
 ## 12. Backups
 
-Back up these on the coordinator:
+Automated by `subterra-backup.timer` on the coordinator (installed by `setup.sh` from `subterra-wg-hub`). Runs `scripts/backup.sh` nightly at 03:00.
 
-- `/var/lib/headscale/db.sqlite` — tailnet state
-- `/var/lib/headscale/noise_private.key` — server identity
-- `/etc/headscale/acl.hujson` — policy
-- `/etc/headscale/config.yaml` — server config
+What it captures, per snapshot, in `/var/backups/subterra-hub/<UTC-timestamp>/`:
 
-Nightly `sqlite3 db.sqlite .dump > /backup/$(date +%F).sql` off-host is enough. Losing the DB means every node has to re-register; losing the noise key means nodes can't verify the server.
+- `db.sql.gz` — gzipped `sqlite3 .dump` of `/var/lib/headscale/db.sqlite` (WAL-safe)
+- `noise_private.key` — server identity; lose this and every node must re-register
+- `config.yaml` + `acl.hujson` — from `/etc/headscale/`
+- `manifest.txt` — timestamp, hostname, headscale version, file sizes
+
+Retention: 14 days (`SUBTERRA_BACKUP_RETENTION=14`). Older snapshot directories are removed on each run.
+
+Offsite (optional): set `SUBTERRA_BACKUP_REMOTE=<rsync-target>` (e.g. `user@host:/path/`) in `/etc/subterra-hub/backup.env`. After each local snapshot the script runs `rsync -a --delete` to the remote. Failure is WARN-level, not fatal.
+
+### Restore procedure
+
+```
+sudo ls -1 /var/backups/subterra-hub/                     # pick a snapshot
+sudo subterra-restore /var/backups/subterra-hub/<ts>      # restore-in-place
+```
+
+`subterra-restore` stops headscale, refuses to clobber an existing `db.sqlite` without `--force`, extracts the dump, reinstalls the noise key + config + ACL, fixes ownership to `headscale:headscale`, starts the service, and runs `headscale users list` as a sanity check. Test-harness mode: `SUBTERRA_SKIP_SYSTEMCTL=1` (used by `tests/test_backup_restore.sh`).
+
+Covered by `subterra-wg-hub/tests/test_backup_restore.sh` — round-trip: seed state → backup → wipe → restore → verify users + preauthkeys return.

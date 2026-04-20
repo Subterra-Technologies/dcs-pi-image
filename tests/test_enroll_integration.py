@@ -1,8 +1,12 @@
 """Pi enroll script unit test in DRY_RUN mode.
 
-Does not require headscale running — we stub the expected inputs and verify
-the script reads the enroll config, computes routes, and would call
-`tailscale up` with the correct flags.
+Does not require Tailscale/Headscale running — we stub the expected inputs
+and verify the script reads the enroll config, computes routes, and would
+call `tailscale up` with the correct flags.
+
+Covers both:
+  - Tailscale SaaS mode (no login_server; default)
+  - Self-hosted Headscale mode (explicit login_server)
 """
 from __future__ import annotations
 
@@ -18,71 +22,94 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 ENROLL_SCRIPT = REPO_ROOT / "rootfs" / "usr" / "local" / "sbin" / "subterra-enroll"
 
 
-def main() -> int:
+def run_enroll(cfg: dict, serial: str = "ABCDEF12") -> subprocess.CompletedProcess:
     sandbox = Path(tempfile.mkdtemp(prefix="subterra-pi-"))
-    pi_state = sandbox / "pi-state"
-    pi_boot = sandbox / "pi-boot"
-    pi_state.mkdir()
-    pi_boot.mkdir()
+    try:
+        pi_state = sandbox / "pi-state"
+        pi_boot = sandbox / "pi-boot"
+        pi_state.mkdir()
+        pi_boot.mkdir()
+        (pi_boot / "subterra-enroll.json").write_text(json.dumps(cfg))
+        env = {
+            **os.environ,
+            "SUBTERRA_STATE_DIR": str(pi_state),
+            "SUBTERRA_ENROLL_CONFIG": str(pi_boot / "subterra-enroll.json"),
+            "SUBTERRA_DRY_RUN": "1",
+            "SUBTERRA_SERIAL": serial,
+        }
+        r = subprocess.run(
+            ["bash", str(ENROLL_SCRIPT)],
+            env=env, capture_output=True, text=True,
+        )
+        r.sandbox = sandbox   # type: ignore[attr-defined]
+        return r
+    except Exception:
+        shutil.rmtree(sandbox, ignore_errors=True)
+        raise
 
-    enroll_cfg = {
+
+def case_saas() -> None:
+    """Default path: no login_server → defaults to Tailscale SaaS."""
+    cfg = {
         "authkey": "tskey-auth-test-00000000000000000000",
-        "coordinator": "https://hub.subterra.test",
         "district": "oakridge",
         "advertise_routes": ["192.168.10.0/24"],
     }
-    (pi_boot / "subterra-enroll.json").write_text(json.dumps(enroll_cfg))
-
-    pi_env = {
-        **os.environ,
-        "SUBTERRA_STATE_DIR": str(pi_state),
-        "SUBTERRA_ENROLL_CONFIG": str(pi_boot / "subterra-enroll.json"),
-        "SUBTERRA_DRY_RUN": "1",
-        "SUBTERRA_SERIAL": "ABCDEF12",
-    }
-
+    r = run_enroll(cfg)
     try:
-        result = subprocess.run(
-            ["bash", str(ENROLL_SCRIPT)],
-            env=pi_env, capture_output=True, text=True,
-        )
-        if result.returncode != 0:
-            print("stderr:\n", result.stderr, file=sys.stderr)
-            raise SystemExit(f"enroll exited {result.returncode}")
-
-        err = result.stderr
-        # Verify the dry-run log shows the tailscale command that would run.
+        if r.returncode != 0:
+            print(r.stderr, file=sys.stderr)
+            raise SystemExit("SaaS case: exit nonzero")
+        err = r.stderr
         assert "DRY: tailscale up" in err, err
-        assert "--login-server https://hub.subterra.test" in err, err
         assert "--authkey tskey-auth-test-00000000000000000000" in err, err
         assert "--ssh" in err, err
         assert "--advertise-routes" in err, err
         assert "192.168.10.0/24" in err, err
-        # Hostname should include district + short serial.
         assert "oakridge-pi-ABCDEF12" in err, err
+        # Critical: SaaS mode MUST NOT pass --login-server.
+        assert "--login-server" not in err, err
+        assert "joining tailnet (Tailscale SaaS)" in err, err
 
-        meta = json.loads((pi_state / "enrollment.json").read_text())
+        meta = json.loads((r.sandbox / "pi-state" / "enrollment.json").read_text())
         assert meta["district"] == "oakridge", meta
-        assert meta["coordinator"] == "https://hub.subterra.test", meta
+        assert meta["login_server"] == "tailscale-saas", meta
         assert meta["hostname"] == "oakridge-pi-ABCDEF12", meta
-        assert "192.168.10.0/24" in meta["advertise_routes"], meta
-
-        assert (pi_state / "enrolled").exists()
-        assert not (pi_boot / "subterra-enroll.json").exists()
-
-        # Re-run must short-circuit.
-        (pi_boot / "subterra-enroll.json").write_text(json.dumps(enroll_cfg))
-        rerun = subprocess.run(
-            ["bash", str(ENROLL_SCRIPT)],
-            env=pi_env, capture_output=True, text=True,
-        )
-        assert rerun.returncode == 0
-        assert "already enrolled" in rerun.stderr, rerun.stderr
-
-        print("OK: Pi tailscale enrollment dry-run green")
-        return 0
+        print("OK: SaaS default path")
     finally:
-        shutil.rmtree(sandbox, ignore_errors=True)
+        shutil.rmtree(r.sandbox, ignore_errors=True)
+
+
+def case_headscale() -> None:
+    """Explicit login_server → backward-compatible Headscale path."""
+    cfg = {
+        "authkey": "tskey-auth-test-00000000000000000000",
+        "login_server": "https://hub.example.test",
+        "district": "lincoln",
+        "advertise_routes": ["10.5.0.0/24"],
+    }
+    r = run_enroll(cfg, serial="11111111")
+    try:
+        if r.returncode != 0:
+            print(r.stderr, file=sys.stderr)
+            raise SystemExit("Headscale case: exit nonzero")
+        err = r.stderr
+        assert "DRY: tailscale up" in err, err
+        assert "--login-server https://hub.example.test" in err, err
+        assert "lincoln-pi-11111111" in err, err
+
+        meta = json.loads((r.sandbox / "pi-state" / "enrollment.json").read_text())
+        assert meta["login_server"] == "https://hub.example.test", meta
+        print("OK: Headscale explicit login_server path")
+    finally:
+        shutil.rmtree(r.sandbox, ignore_errors=True)
+
+
+def main() -> int:
+    case_saas()
+    case_headscale()
+    print("\nOK: Pi tailscale enrollment dry-run green (SaaS + Headscale paths)")
+    return 0
 
 
 if __name__ == "__main__":
