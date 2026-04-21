@@ -104,6 +104,26 @@ fi
 log "joining tailnet (Tailscale SaaS)"
 priv tailscale "${args[@]}"
 
+# Sanity-check that the authkey was tag-scoped for this district.
+# Result is logged with TAGCHECK {PASS|FAIL|SKIPPED} so detel-setup can
+# surface it prominently. We never block enrollment on a tag mismatch —
+# the Pi is already on the tailnet — but a FAIL tells ops to revoke the
+# key, mint a properly-scoped one, and rerun.
+EXPECTED_TAG="tag:pi-${DISTRICT}"
+if [[ "${DRY_RUN}" = "1" ]]; then
+    log "TAGCHECK SKIPPED (dry run; expected ${EXPECTED_TAG})"
+else
+    sleep 2  # let tailscaled settle after `up`
+    ACTUAL_TAGS="$(tailscale status --json 2>/dev/null | jq -r '(.Self.Tags // []) | join(",")' 2>/dev/null || echo "")"
+    if [[ -z "${ACTUAL_TAGS}" ]]; then
+        log "TAGCHECK FAIL: node has no tags; authkey was not tag-scoped (expected ${EXPECTED_TAG})"
+    elif [[ ",${ACTUAL_TAGS}," = *",${EXPECTED_TAG},"* ]]; then
+        log "TAGCHECK PASS: ${ACTUAL_TAGS}"
+    else
+        log "TAGCHECK FAIL: expected ${EXPECTED_TAG}; got ${ACTUAL_TAGS}"
+    fi
+fi
+
 # Record what we did for humans reading the Pi later.
 jq -n \
     --arg hostname "${HOSTNAME_NEW}" \

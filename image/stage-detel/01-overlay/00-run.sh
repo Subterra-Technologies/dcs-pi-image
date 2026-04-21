@@ -16,6 +16,7 @@ rsync -a \
 chmod 0755 "${ROOTFS_DIR}/usr/local/sbin/detel-enroll"
 chmod 0755 "${ROOTFS_DIR}/usr/local/sbin/detel-heartbeat"
 chmod 0755 "${ROOTFS_DIR}/usr/local/sbin/detel-setup"
+chmod 0755 "${ROOTFS_DIR}/usr/local/sbin/detel"
 install -d -m 0700 "${ROOTFS_DIR}/etc/wireguard"
 install -d -m 0755 "${ROOTFS_DIR}/var/lib/detel"
 

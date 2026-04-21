@@ -1,0 +1,277 @@
+#!/usr/bin/env bash
+# detel: admin TUI for a deployed Detel Pi.
+#
+# Usage:
+#   detel               → interactive menu
+#   detel status        → current state summary
+#   detel stats         → uptime, peers, NAT
+#   detel logs          → pick a service, tail journal
+#   detel routes        → view/edit advertised subnets
+#   detel reconfigure   → wipe state + re-run detel-setup
+#   detel reset         → tailnet logout + wipe local enrollment state
+#   detel help          → this text
+
+set -euo pipefail
+
+if [[ $EUID -ne 0 ]]; then
+    exec sudo "$0" "$@"
+fi
+
+STATE_DIR=/var/lib/detel
+ENROLL_META="${STATE_DIR}/enrollment.json"
+ENROLL_SENTINEL="${STATE_DIR}/enrolled"
+
+# Palette
+C_BRAND=99      # purple
+C_OK=42         # green
+C_WARN=214      # amber
+C_ERR=196       # red
+C_MUTED=245     # gray
+C_INFO=75       # cyan
+
+header()  { gum style --border double --border-foreground "${C_BRAND}" --padding "1 3" --margin "1 0" --foreground "${C_BRAND}" --bold "$@"; }
+section() { gum style --foreground "${C_BRAND}" --bold --margin "1 0 0 0" "▸ $*"; }
+ok()      { gum style --foreground "${C_OK}"    "✓ $*"; }
+warn()    { gum style --foreground "${C_WARN}"  "⚠ $*"; }
+err()     { gum style --foreground "${C_ERR}"   "✗ $*"; }
+muted()   { gum style --foreground "${C_MUTED}" "$*"; }
+kv()      { printf '  %-14s %s\n' "$1" "$2"; }
+
+is_enrolled() { [[ -f "${ENROLL_SENTINEL}" ]]; }
+
+meta() {
+    [[ -f "${ENROLL_META}" ]] || { echo ""; return; }
+    jq -r --arg k "$1" '.[$k] // ""' "${ENROLL_META}"
+}
+
+tailnet_ip()     { tailscale ip -4 2>/dev/null | head -1 || true; }
+tailnet_state()  { tailscale status --json 2>/dev/null | jq -r '.BackendState // "Unknown"'; }
+tailnet_online() { [[ "$(tailnet_state)" == "Running" ]]; }
+
+advertised_routes_csv() {
+    # Prefs is the source of truth for what this node advertises.
+    tailscale debug prefs 2>/dev/null \
+        | jq -r '.AdvertiseRoutes // [] | join(",")' 2>/dev/null || true
+}
+
+peer_counts() {
+    local j
+    j=$(tailscale status --json 2>/dev/null || echo '{}')
+    local total online
+    total=$(jq '[.Peer // {} | to_entries[].value] | length' <<<"${j}" 2>/dev/null || echo 0)
+    online=$(jq '[.Peer // {} | to_entries[].value | select(.Online==true)] | length' <<<"${j}" 2>/dev/null || echo 0)
+    echo "${online}/${total}"
+}
+
+cmd_status() {
+    header "Detel Pi — Status"
+    local enr district hostname routes tn_ip tn_state_s peers
+    if is_enrolled; then
+        enr="$(gum style --foreground "${C_OK}" "✓ yes")  $(muted "since $(meta enrolled_at)")"
+    else
+        enr="$(gum style --foreground "${C_ERR}" "✗ no") $(muted "(run 'detel-setup')")"
+    fi
+    district=$(meta district)
+    hostname=$(meta hostname)
+    routes=$(advertised_routes_csv)
+    [[ -z "${routes}" ]] && routes=$(meta advertise_routes)
+    tn_ip=$(tailnet_ip)
+    if tailnet_online; then
+        tn_state_s="$(gum style --foreground "${C_OK}" "✓ online (Running)")"
+    else
+        tn_state_s="$(gum style --foreground "${C_ERR}" "✗ $(tailnet_state)")"
+    fi
+    peers=$(peer_counts)
+
+    kv "Enrolled"   "${enr}"
+    kv "District"   "${district:-<unset>}"
+    kv "Hostname"   "${hostname:-$(hostname)}"
+    kv "Routes"     "${routes:-<none>}"
+    kv "Tailnet IP" "${tn_ip:-<none>}"
+    kv "Tailnet"    "${tn_state_s}"
+    kv "Peers"      "${peers} (online/total)"
+}
+
+cmd_stats() {
+    header "Detel Pi — Stats"
+    local up load mem disk zabbix temp
+    up=$(uptime -p | sed 's/^up //')
+    load=$(awk '{print $1", "$2", "$3}' /proc/loadavg)
+    mem=$(free -h --si | awk '/^Mem:/ {print $3" / "$2" used"}')
+    disk=$(df -h --output=used,size,pcent / | tail -1 | awk '{print $1" / "$2" ("$3")"}')
+    temp=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null | awk '{printf "%.1f°C\n", $1/1000}' || echo "n/a")
+    if systemctl is-active --quiet zabbix-proxy 2>/dev/null; then
+        zabbix="$(gum style --foreground "${C_OK}" "✓ running")"
+    elif systemctl list-unit-files zabbix-proxy.service 2>/dev/null | grep -q zabbix; then
+        zabbix="$(gum style --foreground "${C_ERR}" "✗ not running")"
+    else
+        zabbix="$(muted "not installed")"
+    fi
+
+    kv "Uptime"        "${up}"
+    kv "Load avg"      "${load}"
+    kv "Memory"        "${mem}"
+    kv "Disk (/)"      "${disk}"
+    kv "CPU temp"      "${temp}"
+    kv "Zabbix proxy"  "${zabbix}"
+    kv "Peers"         "$(peer_counts) (online/total)"
+
+    section "Tailscale netcheck"
+    if tailnet_online; then
+        local out
+        out=$(mktemp)
+        gum spin --spinner dot --spinner.foreground "${C_BRAND}" \
+            --title "probing network (takes ~5s)…" -- \
+            bash -c "tailscale netcheck > '${out}' 2>&1 || true"
+        sed 's/^/  /' "${out}" | head -25
+        rm -f "${out}"
+    else
+        muted "  tailnet offline — skipping"
+    fi
+}
+
+cmd_logs() {
+    local svc unit
+    svc=$(gum choose --cursor "› " --header "Which service?" \
+        "Enrollment (first-boot.service)" \
+        "Tailscale (tailscaled)" \
+        "Heartbeat (detel-heartbeat.service)" \
+        "System journal")
+    case "${svc}" in
+        Enrollment*) unit=first-boot.service ;;
+        Tailscale*)  unit=tailscaled ;;
+        Heartbeat*)  unit=detel-heartbeat.service ;;
+        System*)     unit="" ;;
+        *) exit 0 ;;
+    esac
+    section "${svc} — last 50 entries"
+    if [[ -n "${unit}" ]]; then
+        journalctl -u "${unit}" -n 50 --no-pager 2>&1
+    else
+        journalctl -n 50 --no-pager
+    fi
+}
+
+cmd_routes() {
+    header "Detel Pi — Advertised routes"
+    if ! command -v tailscale >/dev/null; then
+        err "tailscale not installed"; exit 1
+    fi
+
+    local csv
+    csv=$(advertised_routes_csv)
+    local -a current=()
+    if [[ -n "${csv}" ]]; then
+        IFS=',' read -ra current <<<"${csv}"
+    fi
+
+    if [[ ${#current[@]} -eq 0 ]]; then
+        muted "No advertised routes."
+    else
+        muted "Current:"
+        for r in "${current[@]}"; do
+            printf '    • %s\n' "${r}"
+        done
+    fi
+
+    local action pick cidr
+    action=$(gum choose --cursor "› " "Add a CIDR" "Remove a CIDR" "Cancel")
+    local -a new=()
+    case "${action}" in
+        "Add a CIDR")
+            cidr=$(gum input --prompt "› " --placeholder "e.g. 10.42.0.0/24")
+            [[ "${cidr}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]] \
+                || { err "invalid CIDR"; exit 1; }
+            new=("${current[@]}" "${cidr}")
+            ;;
+        "Remove a CIDR")
+            [[ ${#current[@]} -gt 0 ]] || { warn "nothing to remove"; exit 0; }
+            pick=$(gum choose --cursor "› " "${current[@]}")
+            for r in "${current[@]}"; do
+                [[ "${r}" != "${pick}" ]] && new+=("${r}")
+            done
+            ;;
+        *) exit 0 ;;
+    esac
+
+    local new_csv
+    new_csv=$(IFS=','; echo "${new[*]}")
+    gum confirm "Apply advertise-routes=${new_csv:-<none>}?" || exit 0
+    tailscale set --advertise-routes="${new_csv}"
+    ok "Set. Approve in the Tailscale admin console if any CIDRs are new."
+}
+
+cmd_reconfigure() {
+    warn "Reconfigure wipes local enrollment and re-runs detel-setup."
+    gum confirm "Proceed?" || exit 0
+    exec /usr/local/sbin/detel-setup
+}
+
+cmd_reset() {
+    err "Reset logs out of the tailnet and wipes local enrollment state."
+    gum confirm "Proceed?" || exit 0
+    tailscale logout 2>/dev/null || true
+    rm -f "${ENROLL_SENTINEL}" "${ENROLL_META}"
+    ok "Reset complete. Run 'detel-setup' to re-enroll."
+}
+
+cmd_menu() {
+    if ! is_enrolled; then
+        header "Detel Pi"
+        warn "This Pi has no enrollment state yet."
+        gum confirm "Run detel-setup now?" || exit 0
+        exec /usr/local/sbin/detel-setup
+    fi
+
+    header "Detel Pi — $(meta district) / $(meta hostname)"
+    local choice
+    choice=$(gum choose --cursor "› " --header "What would you like to do?" \
+        "status       — current state summary" \
+        "stats        — uptime, peers, NAT" \
+        "logs         — recent journal entries" \
+        "routes       — view/edit advertised subnets" \
+        "reconfigure  — re-run setup (new district/authkey)" \
+        "reset        — wipe local enrollment state" \
+        "exit")
+    case "${choice}" in
+        status*)      cmd_status ;;
+        stats*)       cmd_stats ;;
+        logs*)        cmd_logs ;;
+        routes*)      cmd_routes ;;
+        reconfigure*) cmd_reconfigure ;;
+        reset*)       cmd_reset ;;
+        *)            exit 0 ;;
+    esac
+}
+
+usage() {
+    cat <<EOF
+detel — admin TUI for a deployed Detel Pi
+
+Usage:
+  detel [SUBCOMMAND]
+
+Subcommands:
+  status        current state summary
+  stats         uptime, peers, NAT
+  logs          pick a service, show recent journal entries
+  routes        view or edit advertised subnets
+  reconfigure   wipe state + re-run detel-setup
+  reset         log out of tailnet + wipe local enrollment state
+  help          show this help
+
+With no subcommand, opens an interactive menu.
+EOF
+}
+
+case "${1:-menu}" in
+    status)                cmd_status ;;
+    stats)                 cmd_stats ;;
+    logs)                  cmd_logs ;;
+    routes)                cmd_routes ;;
+    reconfigure|reconfig)  cmd_reconfigure ;;
+    reset)                 cmd_reset ;;
+    menu|'')               cmd_menu ;;
+    -h|--help|help)        usage ;;
+    *) err "unknown subcommand: $1"; usage; exit 2 ;;
+esac

@@ -2,11 +2,11 @@
 # detel-setup: interactive TUI to provision a Detel Pi before office → site deploy.
 #
 # Flow:
-#   1. Collect district, school LAN CIDR, hostname hint, paste tailscale authkey
+#   1. Collect district, 1+ school LAN CIDRs, hostname hint, paste tailscale authkey
 #   2. Write /boot/firmware/detel-enroll.json with explicit advertise_routes
 #   3. Kick first-boot.service; detel-enroll runs, joins tailnet, reboots
 #
-# After this succeeds the Pi is fully enrolled with the *school's* LAN advertised,
+# After this succeeds the Pi is fully enrolled with the *school's* LAN(s) advertised,
 # even though it's physically sitting in the office. Ship it; it will come online
 # at the school with the same tailnet identity.
 
@@ -19,56 +19,142 @@ fi
 ENROLL_CONFIG=/boot/firmware/detel-enroll.json
 STATE_DIR=/var/lib/detel
 
-gum style --border double --padding "1 2" --margin "1 0" --foreground 212 --border-foreground 212 \
-    'Detel Pi Setup' '' 'Provision this Pi for a district before deployment.'
+# Palette
+C_BRAND=99      # purple
+C_OK=42         # green
+C_WARN=214      # amber
+C_ERR=196       # red
+C_MUTED=245     # gray
+C_INFO=75       # cyan-blue
+
+header() {
+    gum style \
+        --border double --border-foreground "${C_BRAND}" \
+        --padding "1 3" --margin "1 0" \
+        --foreground "${C_BRAND}" --bold \
+        "$@"
+}
+section() { gum style --foreground "${C_BRAND}" --bold --margin "1 0 0 0" "▸ $*"; }
+ok()      { gum style --foreground "${C_OK}"    "✓ $*"; }
+warn()    { gum style --foreground "${C_WARN}"  "⚠ $*"; }
+err()     { gum style --foreground "${C_ERR}"   "✗ $*"; }
+muted()   { gum style --foreground "${C_MUTED}" "$*"; }
+
+valid_cidr() {
+    [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]]
+}
+
+header "Detel Pi Setup" "" "Provision this Pi for a district before deployment."
 
 if [[ -f "${STATE_DIR}/enrolled" ]]; then
-    gum style --foreground 208 "This Pi is already enrolled."
+    warn "This Pi is already enrolled."
     gum confirm "Re-enroll? This wipes local tailscale state." || exit 0
     tailscale logout 2>/dev/null || true
     rm -f "${STATE_DIR}/enrolled" "${STATE_DIR}/enrollment.json"
+    ok "Previous state cleared."
 fi
 
-DISTRICT=$(gum input --prompt "District slug: " --placeholder "e.g. oakridge")
-[[ -n "${DISTRICT}" ]] || { gum style --foreground 196 "district required"; exit 1; }
+section "District"
+DISTRICT=$(gum input --prompt "› " --placeholder "slug, e.g. oakridge")
+[[ -n "${DISTRICT}" ]] || { err "district required"; exit 1; }
 
-CIDR=$(gum input --prompt "School LAN CIDR: " --placeholder "e.g. 10.42.0.0/24")
-[[ -n "${CIDR}" ]] || { gum style --foreground 196 "CIDR required"; exit 1; }
+section "School LAN subnets"
+muted "Enter each CIDR the Pi should advertise. Leave blank to finish."
+CIDRS=()
+while true; do
+    if [[ ${#CIDRS[@]} -eq 0 ]]; then
+        placeholder="e.g. 10.42.0.0/24"
+    else
+        placeholder="another CIDR, or blank to finish (${#CIDRS[@]} added)"
+    fi
+    CIDR=$(gum input --prompt "› " --placeholder "${placeholder}")
+    [[ -z "${CIDR}" ]] && break
+    if ! valid_cidr "${CIDR}"; then
+        err "invalid CIDR: ${CIDR}"
+        continue
+    fi
+    CIDRS+=("${CIDR}")
+    ok "added ${CIDR}"
+done
+[[ ${#CIDRS[@]} -gt 0 ]] || { err "at least one CIDR required"; exit 1; }
 
-HOSTNAME_HINT=$(gum input --prompt "Hostname (blank = auto): " --placeholder "e.g. oakridge-pi-main")
+section "Hostname"
+muted "Blank → auto: <district>-pi-<serial8>"
+HOSTNAME_HINT=$(gum input --prompt "› " --placeholder "e.g. oakridge-pi-main")
 
-gum style --foreground 212 "Paste the Tailscale auth key (tag-scoped for this district):"
-AUTHKEY=$(gum input --password --prompt "authkey> ")
-[[ -n "${AUTHKEY}" ]] || { gum style --foreground 196 "authkey required"; exit 1; }
+section "Tailscale auth key"
+muted "Must be tag-scoped for this district (e.g. tag:pi-${DISTRICT})."
+AUTHKEY=$(gum input --password --prompt "› ")
+[[ -n "${AUTHKEY}" ]] || { err "authkey required"; exit 1; }
 
+# Summary
+ROUTES_DISPLAY=$(printf '%s, ' "${CIDRS[@]}"); ROUTES_DISPLAY=${ROUTES_DISPLAY%, }
 printf '\n'
-gum style --border normal --padding "0 1" \
-    "District:      ${DISTRICT}" \
-    "School CIDR:   ${CIDR}" \
-    "Hostname:      ${HOSTNAME_HINT:-<auto: ${DISTRICT}-pi-XXXX>}" \
-    "Authkey:       ${AUTHKEY:0:12}… (hidden)"
+gum style --border normal --border-foreground "${C_MUTED}" --padding "0 2" \
+    "$(gum style --bold --foreground "${C_INFO}" 'Review')" \
+    "" \
+    "  District    ${DISTRICT}" \
+    "  Subnets     ${ROUTES_DISPLAY}" \
+    "  Hostname    ${HOSTNAME_HINT:-<auto: ${DISTRICT}-pi-XXXX>}" \
+    "  Authkey     ${AUTHKEY:0:12}… (hidden)"
 
-gum confirm "Write config and start enrollment?" || { gum style --foreground 208 "aborted"; exit 1; }
+gum confirm "Write config and start enrollment?" || { warn "aborted"; exit 1; }
 
+# Build JSON array from CIDRS
+ROUTES_JSON=$(printf '%s\n' "${CIDRS[@]}" | jq -R . | jq -s .)
 jq -n \
     --arg authkey  "${AUTHKEY}" \
     --arg district "${DISTRICT}" \
-    --arg route    "${CIDR}" \
+    --argjson routes "${ROUTES_JSON}" \
     --arg hostname "${HOSTNAME_HINT}" \
-    '{authkey:$authkey, district:$district, advertise_routes:[$route]}
+    '{authkey:$authkey, district:$district, advertise_routes:$routes}
      + (if $hostname == "" then {} else {hostname:$hostname} end)' \
     > "${ENROLL_CONFIG}"
 chmod 0600 "${ENROLL_CONFIG}"
 
-gum style --foreground 042 "Config written to ${ENROLL_CONFIG}"
+ok "Config written to ${ENROLL_CONFIG}"
 
 systemctl reset-failed first-boot.service 2>/dev/null || true
 systemctl start --no-block first-boot.service
 
-gum spin --title "Enrolling (Pi will reboot on success)…" -- sleep 6
+gum spin --spinner dot --spinner.foreground "${C_BRAND}" \
+    --title "Enrolling (Pi will reboot on success)…" -- sleep 6
+
+section "Enrollment log (last 40 lines)"
 journalctl -u first-boot.service -n 40 --no-pager || true
 
-gum style --border double --padding "1 2" --margin "1 0" --foreground 042 --border-foreground 042 \
-    "If you see 'enrollment complete' above, the Pi will reboot shortly." \
+# Pull the most recent TAGCHECK result out of the journal.
+tagcheck_line=$(journalctl -u first-boot.service -n 80 --no-pager 2>/dev/null \
+    | grep -E 'TAGCHECK (PASS|FAIL|SKIPPED)' | tail -1 || true)
+
+section "Tag validation"
+case "${tagcheck_line}" in
+    *"TAGCHECK PASS"*)
+        ok "Node is tagged for district ${DISTRICT}"
+        ;;
+    *"TAGCHECK FAIL"*)
+        err "Tag check FAILED"
+        printf '  %s\n' "${tagcheck_line#*TAGCHECK FAIL: }"
+        warn "The Pi is on the tailnet but in the wrong (or no) tag scope."
+        muted "Fix:"
+        muted "  1. In the Tailscale admin, remove this node"
+        muted "  2. Mint a new authkey with Tags = tag:pi-${DISTRICT}"
+        muted "  3. Run \`sudo detel reset\` then \`sudo detel-setup\`"
+        ;;
+    *"TAGCHECK SKIPPED"*)
+        muted "(skipped — dry run)"
+        ;;
+    *)
+        muted "(no tag check result found in journal yet — check \`sudo detel status\` after reboot)"
+        ;;
+esac
+
+gum style \
+    --border double --border-foreground "${C_OK}" \
+    --padding "1 3" --margin "1 0" \
+    --foreground "${C_OK}" --bold \
+    "✓ Setup complete" \
+    "" \
+    "If you saw 'enrollment complete' above, the Pi will reboot shortly." \
     "Reconnect via the Tailscale admin panel or the new hostname." \
-    "Pi is ready to power off (sudo poweroff) and ship once it's back online."
+    "Ready for \`sudo poweroff\` and shipment once back online."
