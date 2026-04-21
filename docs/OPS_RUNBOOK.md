@@ -1,21 +1,25 @@
 # Detel Fleet — Ops Runbook
 
-Operational procedures for the Headscale + Tailscale fleet. Portable, lives in-repo so it's reachable without Docmost.
+Operational procedures for the Detel fleet. Portable, lives in-repo so it's reachable without Docmost.
 
 Two repos to know:
 
-- `detel-wg-hub` — Headscale coordinator + admin CLI + Zabbix-VM bootstrap
+- `detel-hub` — Headscale back-compat coordinator + admin CLI + Zabbix-VM bootstrap + dashboard + backup/cert-check
 - `detel-pi-image` — Pi 5 golden image (this repo)
+
+Control plane is **Tailscale SaaS**. The self-hosted Headscale coordinator in `detel-hub` is back-compat only, reachable via the optional `login_server` field in the Pi enrollment config.
 
 ---
 
 ## 1. Concepts in three lines
 
-- **District = Headscale user.** Every district gets one user. Slug = user name.
-- **Nodes are tagged.** `tag:pi` for the Pi at the main school; `tag:zabbix` for each Zabbix VM in that district.
-- **Isolation is ACL-enforced.** `autogroup:member` can reach `autogroup:self:*` (same user only). Ops has full access.
+- **District = Tailscale tag.** Each district gets its own tag (e.g. `tag:pi-oakridge`, `tag:zabbix-oakridge`). Tag names in this runbook are placeholders — production has unique per-district names.
+- **Nodes are tagged.** A Pi carries the district's `tag:pi-*`; each Zabbix VM carries the district's `tag:zabbix-*`.
+- **Isolation is ACL-enforced.** Tailscale ACLs restrict cross-district traffic; ops group has full access.
 
-## 2. Coordinator install (one time)
+## 2. Coordinator install (one time, back-compat only)
+
+Only needed if a district Pi will point at self-hosted Headscale via `login_server`. Default path is Tailscale SaaS — skip this section.
 
 Public reachability is via Cloudflare Tunnel — **no edge router port-forwards**. The coordinator has no public inbound ports.
 
@@ -23,11 +27,11 @@ Public reachability is via Cloudflare Tunnel — **no edge router port-forwards*
 2. In the Cloudflare Zero Trust dashboard: Networks → Tunnels → Create tunnel → Cloudflared. Name it (e.g. `detel-hub`). Copy the install token. On the Public Hostnames tab, add: Subdomain = `hub`, Domain = `detel.one`, Type = `HTTP`, URL = `localhost:8080`. DNS is created automatically (CNAME to the tunnel).
 3. On the VM:
    ```
-   git clone <detel-wg-hub repo> /opt/detel-hub-src
+   git clone <detel-hub repo> /opt/detel-hub-src
    sudo /opt/detel-hub-src/setup.sh          # writes template env, exits
    sudo vi /etc/detel-hub/setup.env          # set COORDINATOR_HOSTNAME,
-                                                #   CLOUDFLARE_TUNNEL_TOKEN,
-                                                #   OPS_EMAIL, MGMT_CIDR
+                                             #   CLOUDFLARE_TUNNEL_TOKEN,
+                                             #   OPS_EMAIL, MGMT_CIDR
    sudo /opt/detel-hub-src/setup.sh          # real install; installs cloudflared too
    ```
 4. Verify:
@@ -40,69 +44,66 @@ Public reachability is via Cloudflare Tunnel — **no edge router port-forwards*
 
 ## 3. Onboarding a new district
 
-All commands run on the coordinator VM as an admin with sudo access.
+### 3a. Provision the Pi (office, TUI flow — primary path)
 
-1. **Create the district.**
-   ```
-   sudo detel-admin add-district <slug>
-   ```
-   Slug rule: lowercase, hyphen-separated, unique. Example: `oakridge`, `lincoln-city`.
+In the Tailscale admin console: create a tag-scoped pre-auth key for the district's `tag:pi-<slug>`. Copy the `tskey-auth-...` string.
 
-2. **Issue a pre-auth key for the Pi.**
-   ```
-   sudo detel-admin issue-token <slug> pi              # default 3d
-   # or, for longer pre-ship windows:
-   sudo detel-admin issue-token <slug> pi --expiration 7d
-   ```
-   Raw `hskey-auth-...` string is printed. Capture it — only chance to see it. Default expiration is 3 days (was 14d until commit `92fbb01`).
+Flash the image and boot the Pi on the office LAN:
 
-3. **Drop the key onto a Pi's NVMe.** On the ops flash bench:
-   - Flash `detel-pi-*-lite.img.xz` to a USB-M.2 dock.
-   - Mount the boot partition. Create `detel-enroll.json`:
-     ```json
-     {
-       "authkey": "hskey-auth-...",
-       "coordinator": "https://hub.detel.one",
-       "district": "<slug>",
-       "advertise_routes": ["192.168.1.0/24", "192.168.10.0/24", "10.5.0.0/24"]
-     }
-     ```
-     `advertise_routes` is ops-declared district LAN subnets (ask district IT). Auto-detected primary subnet merges in on top.
-   - Unmount, seat NVMe in Pi 5 + M.2 HAT+.
-   - One-time per Pi, before shipping: boot with keyboard + HDMI, run `sudo rpi-eeprom-config --edit`, set `BOOT_ORDER=0xf416`, reboot.
-   - Ship.
+```
+# ops laptop
+ssh detel@detel-pi.local          # ops SSH key is baked into the image
+sudo detel-setup                  # TUI
+```
 
-4. **Pi boots at school.** Auto-enrolls in <2 minutes. Verify:
-   ```
-   sudo detel-admin list-nodes <slug>
-   # should show the Pi with its tag:pi and Tailscale IP
-   ```
-   Approved routes auto-advertise by policy (RFC1918 is auto-approved for `tag:pi`). Verify:
-   ```
-   sudo detel-admin routes <slug>
-   ```
+Answer four prompts:
 
-5. **Stand up Zabbix VMs for that district.** For each Zabbix VM:
-   - Create the VM on Proxmox. No public IP needed; only outbound internet.
-   - Issue a Zabbix-role token on the coordinator:
-     ```
-     sudo detel-admin issue-token <slug> zabbix
-     ```
-   - On the Zabbix VM:
-     ```
-     git clone <detel-wg-hub repo> /tmp/hub
-     sudo /tmp/hub/zabbix-vm/bootstrap.sh \
-         --coordinator https://hub.detel.one \
-         --authkey hskey-auth-... \
-         --hostname zabbix-<slug>-a
-     ```
-   - Verify on the coordinator:
-     ```
-     sudo detel-admin list-nodes <slug>
-     # Should now list both the Pi and the Zabbix VM
-     ```
+- District slug (e.g. `oakridge`)
+- School LAN CIDR (e.g. `10.42.0.0/24`) — ask district IT; this is what gets advertised
+- Hostname (blank = auto `<slug>-pi-<serial8>`)
+- Paste the Tailscale authkey
 
-6. **Configure Zabbix hosts.** Add district devices to Zabbix using their **real IPs**. The Pi's subnet routes make them reachable. Example: switch at real `10.0.0.1` → enter `10.0.0.1` in Zabbix host interface, associate with that district's Zabbix VM. No virtual addresses, no translation.
+The TUI writes `/boot/firmware/detel-enroll.json` with explicit `advertise_routes`, kicks `first-boot.service`, which joins the tailnet and reboots. Verify in the Tailscale admin panel that the node is online with the expected tag and advertised routes.
+
+```
+sudo poweroff                     # ship it
+```
+
+At the school, the Pi boots, picks up the school LAN on its primary interface, and re-advertises the pre-declared school CIDR. Routes auto-approve via tailnet ACL `autoApprovers` (RFC1918 for `tag:pi-*`).
+
+### 3b. Fallback: unattended JSON seeding
+
+If you can't SSH to the Pi (e.g. no office LAN at flash time), mount the boot partition on the flash bench and drop in `/boot/firmware/detel-enroll.json` directly:
+
+```json
+{
+  "authkey": "tskey-auth-...",
+  "district": "<slug>",
+  "advertise_routes": ["10.42.0.0/24"],
+  "hostname": "<slug>-pi-main"
+}
+```
+
+Fields: `authkey` and `district` required. `advertise_routes` optional (the enroll script merges any auto-detected primary subnet on top). `hostname` optional (default `<district>-pi-<serial8>`). `login_server` optional — set only when dialing self-hosted Headscale; omit for Tailscale SaaS.
+
+### 3c. Stand up Zabbix VMs for the district
+
+For each Zabbix VM:
+
+- Create the VM on Proxmox. No public IP needed; only outbound internet.
+- Issue a Tailscale pre-auth key scoped to `tag:zabbix-<slug>`.
+- On the Zabbix VM:
+  ```
+  git clone <detel-hub repo> /tmp/hub
+  sudo /tmp/hub/zabbix-vm/bootstrap.sh \
+      --authkey tskey-auth-... \
+      --hostname zabbix-<slug>-a
+  ```
+- Verify in the Tailscale admin panel, or from the hub coordinator if running: `sudo detel-admin list-nodes <slug>`.
+
+### 3d. Configure Zabbix hosts
+
+Add district devices to Zabbix using their **real IPs**. The Pi's subnet routes make them reachable. Example: switch at real `10.0.0.1` → enter `10.0.0.1` in Zabbix host interface, associate with that district's Zabbix VM. No virtual addresses, no translation.
 
 ## 4. Revoking a Pi or Zabbix VM
 
@@ -114,7 +115,9 @@ Node is removed from the tailnet; its tunnel drops within seconds. If it's a com
 
 ## 5. Updating ACL policy
 
-Edit `/etc/headscale/acl.hujson` on the coordinator, then:
+Primary path (Tailscale SaaS): edit the ACL in the Tailscale admin console → Access Controls. Save — changes apply instantly.
+
+Back-compat (self-hosted Headscale): edit `/etc/headscale/acl.hujson` on the coordinator, then:
 
 ```
 sudo detel-admin policy-reload    # if supported by your headscale version
@@ -137,7 +140,9 @@ No SSH keys to distribute. ACL governs who can SSH where. Sessions are logged vi
 
 ## 7. Checking fleet health
 
-LAN dashboard from any workstation inside `MGMT_CIDR`:
+Primary: Tailscale admin console → Machines. Per-tag filter for district view; each machine's page shows approved routes, last-seen, and NAT type.
+
+Back-compat (self-hosted Headscale) — LAN dashboard from any workstation inside `MGMT_CIDR`:
 
 ```
 http://<coordinator>:8081     # summary + per-district table + outstanding keys
@@ -163,9 +168,10 @@ journalctl -u detel-heartbeat --since -10m
 
 | Symptom | First check | Likely cause |
 |---|---|---|
-| Pi never appears in `list-nodes` | `journalctl -u first-boot` on Pi; `tailscale status` | Auth key expired / wrong; school firewall blocking outbound HTTPS |
-| Node shows online but Zabbix can't reach a school device | `detel-admin routes <slug>` — is the real subnet approved? | Route not auto-approved (non-RFC1918) — approve manually: `detel-admin approve-route <node-id> <cidr>` |
-| `tailscale ssh` denied | ACL doesn't grant your email to `group:ops`, or destination tag missing | Edit `/etc/headscale/acl.hujson` + reload |
+| Pi never appears in Tailscale admin (or `list-nodes` on back-compat) | `journalctl -u first-boot` on Pi; `tailscale status` | Auth key expired / wrong / wrong tag; school firewall blocking outbound HTTPS |
+| `detel-setup` TUI can't reach the Pi | `ping detel-pi.local` / check Avahi; fall back to the Pi's DHCP lease IP | Office LAN blocks mDNS, or image was flashed with no authorized_keys overlay |
+| Node shows online but Zabbix can't reach a school device | `detel-admin routes <slug>` (or admin console → routes) — is the real subnet approved? | Route not auto-approved (non-RFC1918) — approve manually in admin console, or `detel-admin approve-route <node-id> <cidr>` |
+| `tailscale ssh` denied | ACL doesn't grant your email to `group:ops`, or destination tag missing | Edit Tailscale ACL (admin console), or `/etc/headscale/acl.hujson` on back-compat + reload |
 | Tunnel flaps intermittently | `tailscale netcheck` on the node — UDP path vs DERP fallback | Common on restrictive school WiFi; DERP fallback on TCP/443 handles it |
 | Headscale won't start after reboot | `journalctl -u headscale -e` | Config syntax error after upgrade, or SQLite corruption — restore from `/var/backups/detel-hub` |
 | Public hostname 502s | `systemctl status cloudflared`; `journalctl -u cloudflared -e` | cloudflared down or tunnel token rotated. Re-run `cloudflared service install <TOKEN>` after updating `setup.env`. Note `cert-check` will still pass because Cloudflare's edge cert stays valid |
@@ -183,8 +189,8 @@ Output in `./deploy/*.img.xz`. Flash to NVMe via USB M.2 dock.
 
 ## 10. End-to-end verification (before first production ship)
 
-1. Coordinator up, `curl https://hub.detel.one/health` returns 200 from the public internet.
-2. Test Pi flashed, bench PoE+ + test school LAN, cold boot to `list-nodes` presence in <120 s.
+1. (Back-compat only) Coordinator up, `curl https://hub.detel.one/health` returns 200 from the public internet.
+2. Test Pi flashed, `ssh detel@detel-pi.local` works, `sudo detel-setup` completes, node appears in Tailscale admin in <120 s.
 3. From a Zabbix VM in the test district: ping a real device IP at the school. Should resolve through the subnet route.
 4. **PoE-cycle 20×.** Filesystem clean, tailnet re-establishes automatically via PersistentKeepalive equivalent.
 5. **Flaky-link recovery.** Block outbound UDP/41641 on the test firewall for 5 min; Tailscale falls back to DERP/TCP-443. Unblock; direct path resumes.
@@ -196,7 +202,7 @@ Output in `./deploy/*.img.xz`. Flash to NVMe via USB M.2 dock.
 
 ```
 # Hub smoke (headscale v0.28 in /tmp; exercises detel-admin incl. `keys list`):
-cd detel-wg-hub
+cd detel-hub
 ./tests/test_hub_smoke.sh
 
 # Backup + restore round-trip (seed → backup → wipe → restore → verify):
@@ -214,7 +220,7 @@ All four should print `OK:` on success. Run before every release.
 
 ## 12. Backups
 
-Automated by `detel-backup.timer` on the coordinator (installed by `setup.sh` from `detel-wg-hub`). Runs `scripts/backup.sh` nightly at 03:00.
+Back-compat only: relevant when you're running self-hosted Headscale. Automated by `detel-backup.timer` on the coordinator (installed by `setup.sh` from `detel-hub`). Runs `scripts/backup.sh` nightly at 03:00.
 
 What it captures, per snapshot, in `/var/backups/detel-hub/<UTC-timestamp>/`:
 
@@ -236,4 +242,4 @@ sudo detel-restore /var/backups/detel-hub/<ts>      # restore-in-place
 
 `detel-restore` stops headscale, refuses to clobber an existing `db.sqlite` without `--force`, extracts the dump, reinstalls the noise key + config + ACL, fixes ownership to `headscale:headscale`, starts the service, and runs `headscale users list` as a sanity check. Test-harness mode: `DETEL_SKIP_SYSTEMCTL=1` (used by `tests/test_backup_restore.sh`).
 
-Covered by `detel-wg-hub/tests/test_backup_restore.sh` — round-trip: seed state → backup → wipe → restore → verify users + preauthkeys return.
+Covered by `detel-hub/tests/test_backup_restore.sh` — round-trip: seed state → backup → wipe → restore → verify users + preauthkeys return.
