@@ -3,11 +3,9 @@
 #
 # Reads the pre-auth key from /boot/firmware/detel-enroll.json, joins
 # the Tailscale tailnet, advertises the district's school-LAN subnets.
-# Routes auto-approve via the tailnet ACL's autoApprovers (RFC1918 for
-# tag:pi-*). No raw WireGuard, no NETMAP, no MASQUERADE — Tailscale's
-# subnet router feature + ACL handle all of that.
+# Routes auto-approve via the tailnet ACL's autoApprovers for the Pi's tag.
 #
-# The key must be tagged appropriately (e.g. tag:pi-district-a) when
+# The key must be tagged appropriately for the target district when
 # created in the Tailscale admin console; the tag governs what routes the
 # Pi can advertise and what district Zabbix can reach it.
 set -euo pipefail
@@ -40,15 +38,12 @@ mkdir -p "${STATE_DIR}"
 [[ -f "${ENROLL_CONFIG}" ]] || die "no enrollment config at ${ENROLL_CONFIG}"
 
 AUTHKEY="$(jq -r '.authkey // empty' "${ENROLL_CONFIG}")"
-LOGIN_SERVER="$(jq -r '.login_server // empty' "${ENROLL_CONFIG}")"
 DISTRICT="$(jq -r '.district // empty' "${ENROLL_CONFIG}")"
 ADVERTISE_ROUTES="$(jq -r '.advertise_routes // [] | join(",")' "${ENROLL_CONFIG}")"
 HOSTNAME_HINT="$(jq -r '.hostname // empty' "${ENROLL_CONFIG}")"
 
 [[ -n "${AUTHKEY}" ]]  || die "authkey missing from ${ENROLL_CONFIG}"
 [[ -n "${DISTRICT}" ]] || die "district missing from ${ENROLL_CONFIG}"
-# login_server is OPTIONAL — defaults to Tailscale SaaS (controlplane.tailscale.com).
-# Set it explicitly only if dialing a self-hosted Headscale.
 
 # Auto-detect the primary subnet if ops didn't pre-seed one. Merge with
 # whatever they did pre-seed.
@@ -102,24 +97,20 @@ args=(
     --accept-dns=false
     --reset
 )
-if [[ -n "${LOGIN_SERVER}" ]]; then
-    args+=(--login-server "${LOGIN_SERVER%/}")
-fi
 if [[ -n "${ADVERTISE_ROUTES}" ]]; then
     args+=(--advertise-routes "${ADVERTISE_ROUTES}")
 fi
 
-log "joining tailnet (${LOGIN_SERVER:-Tailscale SaaS})"
+log "joining tailnet (Tailscale SaaS)"
 priv tailscale "${args[@]}"
 
 # Record what we did for humans reading the Pi later.
 jq -n \
     --arg hostname "${HOSTNAME_NEW}" \
     --arg district "${DISTRICT}" \
-    --arg login_server "${LOGIN_SERVER:-tailscale-saas}" \
     --arg routes "${ADVERTISE_ROUTES}" \
     --arg enrolled_at "$(date -u +%FT%TZ)" \
-    '{hostname:$hostname, district:$district, login_server:$login_server,
+    '{hostname:$hostname, district:$district,
       advertise_routes:$routes, enrolled_at:$enrolled_at}' \
     > "${ENROLL_META}"
 

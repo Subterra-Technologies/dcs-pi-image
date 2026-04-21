@@ -1,12 +1,8 @@
 """Pi enroll script unit test in DRY_RUN mode.
 
-Does not require Tailscale/Headscale running — we stub the expected inputs
+Does not require Tailscale running — we stub the expected inputs
 and verify the script reads the enroll config, computes routes, and would
 call `tailscale up` with the correct flags.
-
-Covers both:
-  - Tailscale SaaS mode (no login_server; default)
-  - Self-hosted Headscale mode (explicit login_server)
 """
 from __future__ import annotations
 
@@ -49,7 +45,6 @@ def run_enroll(cfg: dict, serial: str = "ABCDEF12") -> subprocess.CompletedProce
 
 
 def case_saas() -> None:
-    """Default path: no login_server → defaults to Tailscale SaaS."""
     cfg = {
         "authkey": "tskey-auth-test-00000000000000000000",
         "district": "oakridge",
@@ -67,48 +62,21 @@ def case_saas() -> None:
         assert "--advertise-routes" in err, err
         assert "192.168.10.0/24" in err, err
         assert "oakridge-pi-ABCDEF12" in err, err
-        # Critical: SaaS mode MUST NOT pass --login-server.
         assert "--login-server" not in err, err
         assert "joining tailnet (Tailscale SaaS)" in err, err
 
         meta = json.loads((r.sandbox / "pi-state" / "enrollment.json").read_text())
         assert meta["district"] == "oakridge", meta
-        assert meta["login_server"] == "tailscale-saas", meta
         assert meta["hostname"] == "oakridge-pi-ABCDEF12", meta
-        print("OK: SaaS default path")
-    finally:
-        shutil.rmtree(r.sandbox, ignore_errors=True)
-
-
-def case_headscale() -> None:
-    """Explicit login_server → backward-compatible Headscale path."""
-    cfg = {
-        "authkey": "tskey-auth-test-00000000000000000000",
-        "login_server": "https://hub.example.test",
-        "district": "lincoln",
-        "advertise_routes": ["10.5.0.0/24"],
-    }
-    r = run_enroll(cfg, serial="11111111")
-    try:
-        if r.returncode != 0:
-            print(r.stderr, file=sys.stderr)
-            raise SystemExit("Headscale case: exit nonzero")
-        err = r.stderr
-        assert "DRY: tailscale up" in err, err
-        assert "--login-server https://hub.example.test" in err, err
-        assert "lincoln-pi-11111111" in err, err
-
-        meta = json.loads((r.sandbox / "pi-state" / "enrollment.json").read_text())
-        assert meta["login_server"] == "https://hub.example.test", meta
-        print("OK: Headscale explicit login_server path")
+        assert "login_server" not in meta, meta
+        print("OK: SaaS enrollment path")
     finally:
         shutil.rmtree(r.sandbox, ignore_errors=True)
 
 
 def main() -> int:
     case_saas()
-    case_headscale()
-    print("\nOK: Pi tailscale enrollment dry-run green (SaaS + Headscale paths)")
+    print("\nOK: Pi tailscale enrollment dry-run green")
     return 0
 
 
