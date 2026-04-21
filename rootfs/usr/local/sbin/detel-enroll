@@ -45,6 +45,19 @@ HOSTNAME_HINT="$(jq -r '.hostname // empty' "${ENROLL_CONFIG}")"
 [[ -n "${AUTHKEY}" ]]  || die "authkey missing from ${ENROLL_CONFIG}"
 [[ -n "${DISTRICT}" ]] || die "district missing from ${ENROLL_CONFIG}"
 
+# Sanitize district to a valid DNS label (defense-in-depth: the TUI already
+# does this, but a hand-edited JSON could still contain spaces/caps/etc.).
+DISTRICT_CLEAN="$(printf '%s' "${DISTRICT,,}" \
+    | tr ' _' '--' \
+    | sed -E 's/[^a-z0-9-]//g; s/-+/-/g; s/^-+|-+$//g')"
+if [[ -z "${DISTRICT_CLEAN}" ]]; then
+    die "district '${DISTRICT}' reduces to empty slug after sanitizing"
+fi
+if [[ "${DISTRICT_CLEAN}" != "${DISTRICT}" ]]; then
+    log "sanitized district: '${DISTRICT}' → '${DISTRICT_CLEAN}'"
+fi
+DISTRICT="${DISTRICT_CLEAN}"
+
 # Auto-detect the primary subnet as a *fallback* when ops didn't pre-seed
 # any advertise_routes. Never merge into an explicit list — provisioning
 # in the office must not silently add the office LAN when the operator
