@@ -60,10 +60,11 @@ DISTRICT=$(gum input --prompt "› " --placeholder "slug, e.g. oakridge")
 
 section "School LAN subnets"
 muted "Enter each CIDR the Pi should advertise. Leave blank to finish."
+muted "If you skip entirely, auto-detect uses the primary subnet at first boot."
 CIDRS=()
 while true; do
     if [[ ${#CIDRS[@]} -eq 0 ]]; then
-        placeholder="e.g. 10.42.0.0/24"
+        placeholder="e.g. 10.42.0.0/24  (blank → auto-detect at boot)"
     else
         placeholder="another CIDR, or blank to finish (${#CIDRS[@]} added)"
     fi
@@ -76,7 +77,11 @@ while true; do
     CIDRS+=("${CIDR}")
     ok "added ${CIDR}"
 done
-[[ ${#CIDRS[@]} -gt 0 ]] || { err "at least one CIDR required"; exit 1; }
+if [[ ${#CIDRS[@]} -eq 0 ]]; then
+    warn "No CIDR entered — will auto-detect the primary subnet at first boot."
+    warn "If you're shipping this Pi office → school, cancel and enter the school's CIDR now."
+    gum confirm "Continue without explicit CIDRs?" || { warn "aborted"; exit 1; }
+fi
 
 section "Hostname"
 muted "Blank → auto: <district>-pi-<serial8>"
@@ -100,8 +105,12 @@ gum style --border normal --border-foreground "${C_MUTED}" --padding "0 2" \
 
 gum confirm "Write config and start enrollment?" || { warn "aborted"; exit 1; }
 
-# Build JSON array from CIDRS
-ROUTES_JSON=$(printf '%s\n' "${CIDRS[@]}" | jq -R . | jq -s .)
+# Build JSON array from CIDRS (may be empty → detel-enroll will auto-detect)
+if [[ ${#CIDRS[@]} -gt 0 ]]; then
+    ROUTES_JSON=$(printf '%s\n' "${CIDRS[@]}" | jq -R . | jq -s .)
+else
+    ROUTES_JSON='[]'
+fi
 jq -n \
     --arg authkey  "${AUTHKEY}" \
     --arg district "${DISTRICT}" \

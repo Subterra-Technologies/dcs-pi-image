@@ -45,8 +45,10 @@ HOSTNAME_HINT="$(jq -r '.hostname // empty' "${ENROLL_CONFIG}")"
 [[ -n "${AUTHKEY}" ]]  || die "authkey missing from ${ENROLL_CONFIG}"
 [[ -n "${DISTRICT}" ]] || die "district missing from ${ENROLL_CONFIG}"
 
-# Auto-detect the primary subnet if ops didn't pre-seed one. Merge with
-# whatever they did pre-seed.
+# Auto-detect the primary subnet as a *fallback* when ops didn't pre-seed
+# any advertise_routes. Never merge into an explicit list — provisioning
+# in the office must not silently add the office LAN when the operator
+# pre-declared the school's CIDR.
 detect_primary_subnet() {
     local iface cidr
     iface="$(ip -o -4 route show default 2>/dev/null | awk '{print $5; exit}')"
@@ -59,18 +61,15 @@ print(ipaddress.ip_interface(sys.argv[1]).network.with_prefixlen)
 " "${cidr}"
 }
 
-PRIMARY=""
-if PRIMARY="$(detect_primary_subnet)"; then
-    log "detected primary subnet: ${PRIMARY}"
-fi
-
-# Stitch detected + explicit routes into one comma-separated list.
-if [[ -n "${PRIMARY}" ]]; then
-    if [[ -z "${ADVERTISE_ROUTES}" ]]; then
+if [[ -z "${ADVERTISE_ROUTES}" ]]; then
+    if PRIMARY="$(detect_primary_subnet)"; then
+        log "no explicit routes in config — using auto-detected primary subnet: ${PRIMARY}"
         ADVERTISE_ROUTES="${PRIMARY}"
-    elif [[ ",${ADVERTISE_ROUTES}," != *",${PRIMARY},"* ]]; then
-        ADVERTISE_ROUTES="${PRIMARY},${ADVERTISE_ROUTES}"
+    else
+        log "no explicit routes and auto-detect failed — advertising nothing"
     fi
+else
+    log "using explicit routes from config (auto-detect skipped)"
 fi
 log "routes to advertise: ${ADVERTISE_ROUTES:-<none>}"
 
