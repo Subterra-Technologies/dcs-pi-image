@@ -1,11 +1,11 @@
-# Subterra Fleet — Ops Runbook
+# Detel Fleet — Ops Runbook
 
 Operational procedures for the Headscale + Tailscale fleet. Portable, lives in-repo so it's reachable without Docmost.
 
 Two repos to know:
 
-- `subterra-wg-hub` — Headscale coordinator + admin CLI + Zabbix-VM bootstrap
-- `subterra-pi-image` — Pi 5 golden image (this repo)
+- `detel-wg-hub` — Headscale coordinator + admin CLI + Zabbix-VM bootstrap
+- `detel-pi-image` — Pi 5 golden image (this repo)
 
 ---
 
@@ -20,21 +20,21 @@ Two repos to know:
 Public reachability is via Cloudflare Tunnel — **no edge router port-forwards**. The coordinator has no public inbound ports.
 
 1. Fresh Debian 12+ VM. No public IPv4 required; outbound HTTPS is enough.
-2. In the Cloudflare Zero Trust dashboard: Networks → Tunnels → Create tunnel → Cloudflared. Name it (e.g. `subterra-hub`). Copy the install token. On the Public Hostnames tab, add: Subdomain = `hub`, Domain = `subterra.one`, Type = `HTTP`, URL = `localhost:8080`. DNS is created automatically (CNAME to the tunnel).
+2. In the Cloudflare Zero Trust dashboard: Networks → Tunnels → Create tunnel → Cloudflared. Name it (e.g. `detel-hub`). Copy the install token. On the Public Hostnames tab, add: Subdomain = `hub`, Domain = `detel.one`, Type = `HTTP`, URL = `localhost:8080`. DNS is created automatically (CNAME to the tunnel).
 3. On the VM:
    ```
-   git clone <subterra-wg-hub repo> /opt/subterra-hub-src
-   sudo /opt/subterra-hub-src/setup.sh          # writes template env, exits
-   sudo vi /etc/subterra-hub/setup.env          # set COORDINATOR_HOSTNAME,
+   git clone <detel-wg-hub repo> /opt/detel-hub-src
+   sudo /opt/detel-hub-src/setup.sh          # writes template env, exits
+   sudo vi /etc/detel-hub/setup.env          # set COORDINATOR_HOSTNAME,
                                                 #   CLOUDFLARE_TUNNEL_TOKEN,
                                                 #   OPS_EMAIL, MGMT_CIDR
-   sudo /opt/subterra-hub-src/setup.sh          # real install; installs cloudflared too
+   sudo /opt/detel-hub-src/setup.sh          # real install; installs cloudflared too
    ```
 4. Verify:
    ```
-   sudo systemctl status headscale cloudflared subterra-dashboard
-   sudo subterra-admin list-districts            # empty, but no error
-   curl -fsS https://hub.subterra.one/health    # should be 200, via Cloudflare
+   sudo systemctl status headscale cloudflared detel-dashboard
+   sudo detel-admin list-districts            # empty, but no error
+   curl -fsS https://hub.detel.one/health    # should be 200, via Cloudflare
    ```
    If the public hostname 5xx's, `systemctl status cloudflared` + `journalctl -u cloudflared -e`. If cloudflared is up but 502, check the Public Hostname mapping in Cloudflare (URL = `localhost:8080`).
 
@@ -44,25 +44,25 @@ All commands run on the coordinator VM as an admin with sudo access.
 
 1. **Create the district.**
    ```
-   sudo subterra-admin add-district <slug>
+   sudo detel-admin add-district <slug>
    ```
    Slug rule: lowercase, hyphen-separated, unique. Example: `oakridge`, `lincoln-city`.
 
 2. **Issue a pre-auth key for the Pi.**
    ```
-   sudo subterra-admin issue-token <slug> pi              # default 3d
+   sudo detel-admin issue-token <slug> pi              # default 3d
    # or, for longer pre-ship windows:
-   sudo subterra-admin issue-token <slug> pi --expiration 7d
+   sudo detel-admin issue-token <slug> pi --expiration 7d
    ```
    Raw `hskey-auth-...` string is printed. Capture it — only chance to see it. Default expiration is 3 days (was 14d until commit `92fbb01`).
 
 3. **Drop the key onto a Pi's NVMe.** On the ops flash bench:
-   - Flash `subterra-pi-*-lite.img.xz` to a USB-M.2 dock.
-   - Mount the boot partition. Create `subterra-enroll.json`:
+   - Flash `detel-pi-*-lite.img.xz` to a USB-M.2 dock.
+   - Mount the boot partition. Create `detel-enroll.json`:
      ```json
      {
        "authkey": "hskey-auth-...",
-       "coordinator": "https://hub.subterra.one",
+       "coordinator": "https://hub.detel.one",
        "district": "<slug>",
        "advertise_routes": ["192.168.1.0/24", "192.168.10.0/24", "10.5.0.0/24"]
      }
@@ -74,31 +74,31 @@ All commands run on the coordinator VM as an admin with sudo access.
 
 4. **Pi boots at school.** Auto-enrolls in <2 minutes. Verify:
    ```
-   sudo subterra-admin list-nodes <slug>
+   sudo detel-admin list-nodes <slug>
    # should show the Pi with its tag:pi and Tailscale IP
    ```
    Approved routes auto-advertise by policy (RFC1918 is auto-approved for `tag:pi`). Verify:
    ```
-   sudo subterra-admin routes <slug>
+   sudo detel-admin routes <slug>
    ```
 
 5. **Stand up Zabbix VMs for that district.** For each Zabbix VM:
    - Create the VM on Proxmox. No public IP needed; only outbound internet.
    - Issue a Zabbix-role token on the coordinator:
      ```
-     sudo subterra-admin issue-token <slug> zabbix
+     sudo detel-admin issue-token <slug> zabbix
      ```
    - On the Zabbix VM:
      ```
-     git clone <subterra-wg-hub repo> /tmp/hub
+     git clone <detel-wg-hub repo> /tmp/hub
      sudo /tmp/hub/zabbix-vm/bootstrap.sh \
-         --coordinator https://hub.subterra.one \
+         --coordinator https://hub.detel.one \
          --authkey hskey-auth-... \
          --hostname zabbix-<slug>-a
      ```
    - Verify on the coordinator:
      ```
-     sudo subterra-admin list-nodes <slug>
+     sudo detel-admin list-nodes <slug>
      # Should now list both the Pi and the Zabbix VM
      ```
 
@@ -107,7 +107,7 @@ All commands run on the coordinator VM as an admin with sudo access.
 ## 4. Revoking a Pi or Zabbix VM
 
 ```
-sudo subterra-admin delete-node <hostname>
+sudo detel-admin delete-node <hostname>
 ```
 
 Node is removed from the tailnet; its tunnel drops within seconds. If it's a compromised Pi, also power it off remotely — it still has its Tailscale keys until you wipe the NVMe.
@@ -117,7 +117,7 @@ Node is removed from the tailnet; its tunnel drops within seconds. If it's a com
 Edit `/etc/headscale/acl.hujson` on the coordinator, then:
 
 ```
-sudo subterra-admin policy-reload    # if supported by your headscale version
+sudo detel-admin policy-reload    # if supported by your headscale version
 # or
 sudo systemctl restart headscale     # brief disconnect (~5s) for all nodes
 ```
@@ -129,8 +129,8 @@ Policy mode `file` reloads on SIGHUP in current versions; the restart path is th
 From your ops laptop (joined to the tailnet as a `group:ops` member):
 
 ```
-tailscale ssh subterra@<pi-hostname>
-tailscale ssh subterra@zabbix-oakridge-a
+tailscale ssh detel@<pi-hostname>
+tailscale ssh detel@zabbix-oakridge-a
 ```
 
 No SSH keys to distribute. ACL governs who can SSH where. Sessions are logged via Tailscale.
@@ -146,9 +146,9 @@ http://<coordinator>:8081     # summary + per-district table + outstanding keys
 CLI on the coordinator:
 
 ```
-sudo subterra-admin list-nodes             # everything in the tailnet
-sudo subterra-admin routes                 # advertised + approved routes
-sudo subterra-admin keys list              # outstanding (unclaimed) pre-auth keys
+sudo detel-admin list-nodes             # everything in the tailnet
+sudo detel-admin routes                 # advertised + approved routes
+sudo detel-admin keys list              # outstanding (unclaimed) pre-auth keys
 sudo headscale nodes list --output json | jq '.[] | {name, online, lastSeen}'
 ```
 
@@ -156,7 +156,7 @@ Pi-side:
 
 ```
 tailscale status
-journalctl -u subterra-heartbeat --since -10m
+journalctl -u detel-heartbeat --since -10m
 ```
 
 ## 8. Troubleshooting
@@ -164,17 +164,17 @@ journalctl -u subterra-heartbeat --since -10m
 | Symptom | First check | Likely cause |
 |---|---|---|
 | Pi never appears in `list-nodes` | `journalctl -u first-boot` on Pi; `tailscale status` | Auth key expired / wrong; school firewall blocking outbound HTTPS |
-| Node shows online but Zabbix can't reach a school device | `subterra-admin routes <slug>` — is the real subnet approved? | Route not auto-approved (non-RFC1918) — approve manually: `subterra-admin approve-route <node-id> <cidr>` |
+| Node shows online but Zabbix can't reach a school device | `detel-admin routes <slug>` — is the real subnet approved? | Route not auto-approved (non-RFC1918) — approve manually: `detel-admin approve-route <node-id> <cidr>` |
 | `tailscale ssh` denied | ACL doesn't grant your email to `group:ops`, or destination tag missing | Edit `/etc/headscale/acl.hujson` + reload |
 | Tunnel flaps intermittently | `tailscale netcheck` on the node — UDP path vs DERP fallback | Common on restrictive school WiFi; DERP fallback on TCP/443 handles it |
-| Headscale won't start after reboot | `journalctl -u headscale -e` | Config syntax error after upgrade, or SQLite corruption — restore from `/var/backups/subterra-hub` |
+| Headscale won't start after reboot | `journalctl -u headscale -e` | Config syntax error after upgrade, or SQLite corruption — restore from `/var/backups/detel-hub` |
 | Public hostname 502s | `systemctl status cloudflared`; `journalctl -u cloudflared -e` | cloudflared down or tunnel token rotated. Re-run `cloudflared service install <TOKEN>` after updating `setup.env`. Note `cert-check` will still pass because Cloudflare's edge cert stays valid |
-| `subterra-cert-check` WARN or FAIL | `journalctl -u subterra-cert-check` | Under Cloudflare Tunnel, Cloudflare owns the cert and it rarely WARN's. If it does, check DNS + Cloudflare hostname config; exit 1 = <14d, exit 2 = endpoint unreachable |
+| `detel-cert-check` WARN or FAIL | `journalctl -u detel-cert-check` | Under Cloudflare Tunnel, Cloudflare owns the cert and it rarely WARN's. If it does, check DNS + Cloudflare hostname config; exit 1 = <14d, exit 2 = endpoint unreachable |
 
 ## 9. Building a new image
 
 ```
-cd subterra-pi-image
+cd detel-pi-image
 ./image/build.sh          # reuses pi-gen clone
 ./image/build.sh --clean  # from scratch
 ```
@@ -183,20 +183,20 @@ Output in `./deploy/*.img.xz`. Flash to NVMe via USB M.2 dock.
 
 ## 10. End-to-end verification (before first production ship)
 
-1. Coordinator up, `curl https://hub.subterra.one/health` returns 200 from the public internet.
+1. Coordinator up, `curl https://hub.detel.one/health` returns 200 from the public internet.
 2. Test Pi flashed, bench PoE+ + test school LAN, cold boot to `list-nodes` presence in <120 s.
 3. From a Zabbix VM in the test district: ping a real device IP at the school. Should resolve through the subnet route.
 4. **PoE-cycle 20×.** Filesystem clean, tailnet re-establishes automatically via PersistentKeepalive equivalent.
 5. **Flaky-link recovery.** Block outbound UDP/41641 on the test firewall for 5 min; Tailscale falls back to DERP/TCP-443. Unblock; direct path resumes.
 6. **Two districts, overlapping real subnets.** Two test districts both using `192.168.1.0/24`. Each Zabbix VM reaches its own district's hosts without cross-contamination (ACL + per-user subnet routing).
-7. **ACL revoke test.** Delete a node via `subterra-admin delete-node`; its connection drops in seconds.
-8. **Ops SSH test.** `tailscale ssh subterra@<pi-hostname>` from the ops laptop works; denied for an ops-not-in-group user.
+7. **ACL revoke test.** Delete a node via `detel-admin delete-node`; its connection drops in seconds.
+8. **Ops SSH test.** `tailscale ssh detel@<pi-hostname>` from the ops laptop works; denied for an ops-not-in-group user.
 
 ## 11. Running the test suites
 
 ```
-# Hub smoke (headscale v0.28 in /tmp; exercises subterra-admin incl. `keys list`):
-cd subterra-wg-hub
+# Hub smoke (headscale v0.28 in /tmp; exercises detel-admin incl. `keys list`):
+cd detel-wg-hub
 ./tests/test_hub_smoke.sh
 
 # Backup + restore round-trip (seed → backup → wipe → restore → verify):
@@ -206,7 +206,7 @@ cd subterra-wg-hub
 ./tests/test_dashboard.sh
 
 # Pi DRY_RUN:
-cd ../subterra-pi-image
+cd ../detel-pi-image
 python3 tests/test_enroll_integration.py
 ```
 
@@ -214,26 +214,26 @@ All four should print `OK:` on success. Run before every release.
 
 ## 12. Backups
 
-Automated by `subterra-backup.timer` on the coordinator (installed by `setup.sh` from `subterra-wg-hub`). Runs `scripts/backup.sh` nightly at 03:00.
+Automated by `detel-backup.timer` on the coordinator (installed by `setup.sh` from `detel-wg-hub`). Runs `scripts/backup.sh` nightly at 03:00.
 
-What it captures, per snapshot, in `/var/backups/subterra-hub/<UTC-timestamp>/`:
+What it captures, per snapshot, in `/var/backups/detel-hub/<UTC-timestamp>/`:
 
 - `db.sql.gz` — gzipped `sqlite3 .dump` of `/var/lib/headscale/db.sqlite` (WAL-safe)
 - `noise_private.key` — server identity; lose this and every node must re-register
 - `config.yaml` + `acl.hujson` — from `/etc/headscale/`
 - `manifest.txt` — timestamp, hostname, headscale version, file sizes
 
-Retention: 14 days (`SUBTERRA_BACKUP_RETENTION=14`). Older snapshot directories are removed on each run.
+Retention: 14 days (`DETEL_BACKUP_RETENTION=14`). Older snapshot directories are removed on each run.
 
-Offsite (optional): set `SUBTERRA_BACKUP_REMOTE=<rsync-target>` (e.g. `user@host:/path/`) in `/etc/subterra-hub/backup.env`. After each local snapshot the script runs `rsync -a --delete` to the remote. Failure is WARN-level, not fatal.
+Offsite (optional): set `DETEL_BACKUP_REMOTE=<rsync-target>` (e.g. `user@host:/path/`) in `/etc/detel-hub/backup.env`. After each local snapshot the script runs `rsync -a --delete` to the remote. Failure is WARN-level, not fatal.
 
 ### Restore procedure
 
 ```
-sudo ls -1 /var/backups/subterra-hub/                     # pick a snapshot
-sudo subterra-restore /var/backups/subterra-hub/<ts>      # restore-in-place
+sudo ls -1 /var/backups/detel-hub/                     # pick a snapshot
+sudo detel-restore /var/backups/detel-hub/<ts>      # restore-in-place
 ```
 
-`subterra-restore` stops headscale, refuses to clobber an existing `db.sqlite` without `--force`, extracts the dump, reinstalls the noise key + config + ACL, fixes ownership to `headscale:headscale`, starts the service, and runs `headscale users list` as a sanity check. Test-harness mode: `SUBTERRA_SKIP_SYSTEMCTL=1` (used by `tests/test_backup_restore.sh`).
+`detel-restore` stops headscale, refuses to clobber an existing `db.sqlite` without `--force`, extracts the dump, reinstalls the noise key + config + ACL, fixes ownership to `headscale:headscale`, starts the service, and runs `headscale users list` as a sanity check. Test-harness mode: `DETEL_SKIP_SYSTEMCTL=1` (used by `tests/test_backup_restore.sh`).
 
-Covered by `subterra-wg-hub/tests/test_backup_restore.sh` — round-trip: seed state → backup → wipe → restore → verify users + preauthkeys return.
+Covered by `detel-wg-hub/tests/test_backup_restore.sh` — round-trip: seed state → backup → wipe → restore → verify users + preauthkeys return.

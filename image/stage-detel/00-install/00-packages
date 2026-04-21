@@ -8,3 +8,4 @@ curl
 jq
 ca-certificates
 zabbix-proxy-sqlite3
+gum

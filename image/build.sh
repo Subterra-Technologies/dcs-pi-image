@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a subterra-pi Raspberry Pi OS Lite 64-bit image.
+# Build a detel-pi Raspberry Pi OS Lite 64-bit image.
 #
 # Wraps pi-gen. First run clones pi-gen into ./work/pi-gen; subsequent runs
 # reuse it. Produces a flashable .img.xz under ./deploy/.
@@ -31,9 +31,9 @@ if [[ ! -d "${PI_GEN_DIR}" ]]; then
     git clone --depth 1 --branch "${PI_GEN_REF}" "${PI_GEN_REPO}" "${PI_GEN_DIR}"
 fi
 
-echo "installing stage-subterra into pi-gen"
-rsync -a --delete "${HERE}/stage-subterra/" "${PI_GEN_DIR}/stage-subterra/"
-find "${PI_GEN_DIR}/stage-subterra" -type f \( -name '*.sh' -o -name 'prerun.sh' \) \
+echo "installing stage-detel into pi-gen"
+rsync -a --delete "${HERE}/stage-detel/" "${PI_GEN_DIR}/stage-detel/"
+find "${PI_GEN_DIR}/stage-detel" -type f \( -name '*.sh' -o -name 'prerun.sh' \) \
     -exec chmod +x {} +
 
 for stage in stage3 stage4 stage5; do
@@ -42,8 +42,8 @@ done
 # stage2 still produces an intermediate image; we suppress its export.
 touch "${PI_GEN_DIR}/stage2/SKIP_IMAGES"
 
-# Make the overlay reachable to stage-subterra hooks via ${STAGE_DIR}/rootfs.
-ln -snf "${REPO_ROOT}/rootfs" "${PI_GEN_DIR}/stage-subterra/rootfs"
+# Make the overlay reachable to stage-detel hooks via ${STAGE_DIR}/rootfs.
+ln -snf "${REPO_ROOT}/rootfs" "${PI_GEN_DIR}/stage-detel/rootfs"
 
 cp "${HERE}/config" "${PI_GEN_DIR}/config"
 

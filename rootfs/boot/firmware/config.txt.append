@@ -1,4 +1,4 @@
-# === Subterra additions ===
+# === Detel additions ===
 # Enable hardware watchdog (BCM2712 on Pi 5)
 dtparam=watchdog=on
 

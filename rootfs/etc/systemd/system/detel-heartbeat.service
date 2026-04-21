@@ -1,8 +1,8 @@
 [Unit]
-Description=Subterra tunnel heartbeat
+Description=Detel tunnel heartbeat
 After=wg-quick@wg0.service
 Wants=wg-quick@wg0.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/subterra-heartbeat
+ExecStart=/usr/local/sbin/detel-heartbeat

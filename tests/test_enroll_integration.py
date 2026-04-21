@@ -19,23 +19,23 @@ import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-ENROLL_SCRIPT = REPO_ROOT / "rootfs" / "usr" / "local" / "sbin" / "subterra-enroll"
+ENROLL_SCRIPT = REPO_ROOT / "rootfs" / "usr" / "local" / "sbin" / "detel-enroll"
 
 
 def run_enroll(cfg: dict, serial: str = "ABCDEF12") -> subprocess.CompletedProcess:
-    sandbox = Path(tempfile.mkdtemp(prefix="subterra-pi-"))
+    sandbox = Path(tempfile.mkdtemp(prefix="detel-pi-"))
     try:
         pi_state = sandbox / "pi-state"
         pi_boot = sandbox / "pi-boot"
         pi_state.mkdir()
         pi_boot.mkdir()
-        (pi_boot / "subterra-enroll.json").write_text(json.dumps(cfg))
+        (pi_boot / "detel-enroll.json").write_text(json.dumps(cfg))
         env = {
             **os.environ,
-            "SUBTERRA_STATE_DIR": str(pi_state),
-            "SUBTERRA_ENROLL_CONFIG": str(pi_boot / "subterra-enroll.json"),
-            "SUBTERRA_DRY_RUN": "1",
-            "SUBTERRA_SERIAL": serial,
+            "DETEL_STATE_DIR": str(pi_state),
+            "DETEL_ENROLL_CONFIG": str(pi_boot / "detel-enroll.json"),
+            "DETEL_DRY_RUN": "1",
+            "DETEL_SERIAL": serial,
         }
         r = subprocess.run(
             ["bash", str(ENROLL_SCRIPT)],

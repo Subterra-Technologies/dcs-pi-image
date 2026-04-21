@@ -3,7 +3,7 @@
 # SSH is key-only (also enforced by tag-level Tailscale SSH ACLs later).
 
 systemctl enable first-boot.service
-systemctl enable subterra-heartbeat.timer
+systemctl enable detel-heartbeat.timer
 systemctl enable unattended-upgrades.service
 systemctl enable tailscaled.service
 systemctl disable zabbix-proxy 2>/dev/null || true
@@ -14,5 +14,12 @@ sed -i \
     -e 's/^#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' \
     /etc/ssh/sshd_config
 
-# ip_forward sysctl is already in /etc/sysctl.d/99-subterra.conf via the
+# Lock down SSH authorized_keys installed via rootfs overlay.
+if [ -f /home/detel/.ssh/authorized_keys ]; then
+    chmod 0700 /home/detel/.ssh
+    chmod 0600 /home/detel/.ssh/authorized_keys
+    chown -R detel:detel /home/detel/.ssh
+fi
+
+# ip_forward sysctl is already in /etc/sysctl.d/99-detel.conf via the
 # rootfs overlay — no additional writes needed here.

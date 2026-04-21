@@ -1,5 +1,5 @@
 #!/bin/bash -e
-# Copy the Subterra rootfs overlay into the image.
+# Copy the Detel rootfs overlay into the image.
 
 OVERLAY="${STAGE_DIR}/rootfs"
 if [ ! -d "${OVERLAY}" ]; then
@@ -13,10 +13,11 @@ rsync -a \
     "${OVERLAY}/" "${ROOTFS_DIR}/"
 
 # Fix perms on executables and sensitive paths.
-chmod 0755 "${ROOTFS_DIR}/usr/local/sbin/subterra-enroll"
-chmod 0755 "${ROOTFS_DIR}/usr/local/sbin/subterra-heartbeat"
+chmod 0755 "${ROOTFS_DIR}/usr/local/sbin/detel-enroll"
+chmod 0755 "${ROOTFS_DIR}/usr/local/sbin/detel-heartbeat"
+chmod 0755 "${ROOTFS_DIR}/usr/local/sbin/detel-setup"
 install -d -m 0700 "${ROOTFS_DIR}/etc/wireguard"
-install -d -m 0755 "${ROOTFS_DIR}/var/lib/subterra"
+install -d -m 0755 "${ROOTFS_DIR}/var/lib/detel"
 
 # Merge our additions into the pi-gen-produced boot config files.
 if [ -f "${OVERLAY}/boot/firmware/config.txt.append" ]; then

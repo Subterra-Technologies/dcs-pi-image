@@ -1,12 +1,12 @@
 [Unit]
-Description=Subterra first-boot enrollment
+Description=Detel first-boot enrollment
 After=network-online.target
 Wants=network-online.target
-ConditionPathExists=!/var/lib/subterra/enrolled
+ConditionPathExists=!/var/lib/detel/enrolled
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/subterra-enroll
+ExecStart=/usr/local/sbin/detel-enroll
 StandardOutput=journal
 StandardError=journal
 Restart=on-failure

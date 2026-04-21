@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# detel-setup: interactive TUI to provision a Detel Pi before office → site deploy.
+#
+# Flow:
+#   1. Collect district, school LAN CIDR, hostname hint, paste tailscale authkey
+#   2. Write /boot/firmware/detel-enroll.json with explicit advertise_routes
+#   3. Kick first-boot.service; detel-enroll runs, joins tailnet, reboots
+#
+# After this succeeds the Pi is fully enrolled with the *school's* LAN advertised,
+# even though it's physically sitting in the office. Ship it; it will come online
+# at the school with the same tailnet identity.
+
+set -euo pipefail
+
+if [[ $EUID -ne 0 ]]; then
+    exec sudo "$0" "$@"
+fi
+
+ENROLL_CONFIG=/boot/firmware/detel-enroll.json
+STATE_DIR=/var/lib/detel
+
+gum style --border double --padding "1 2" --margin "1 0" --foreground 212 --border-foreground 212 \
+    'Detel Pi Setup' '' 'Provision this Pi for a district before deployment.'
+
+if [[ -f "${STATE_DIR}/enrolled" ]]; then
+    gum style --foreground 208 "This Pi is already enrolled."
+    gum confirm "Re-enroll? This wipes local tailscale state." || exit 0
+    tailscale logout 2>/dev/null || true
+    rm -f "${STATE_DIR}/enrolled" "${STATE_DIR}/enrollment.json"
+fi
+
+DISTRICT=$(gum input --prompt "District slug: " --placeholder "e.g. oakridge")
+[[ -n "${DISTRICT}" ]] || { gum style --foreground 196 "district required"; exit 1; }
+
+CIDR=$(gum input --prompt "School LAN CIDR: " --placeholder "e.g. 10.42.0.0/24")
+[[ -n "${CIDR}" ]] || { gum style --foreground 196 "CIDR required"; exit 1; }
+
+HOSTNAME_HINT=$(gum input --prompt "Hostname (blank = auto): " --placeholder "e.g. oakridge-pi-main")
+
+gum style --foreground 212 "Paste the Tailscale auth key (tag-scoped for this district):"
+AUTHKEY=$(gum input --password --prompt "authkey> ")
+[[ -n "${AUTHKEY}" ]] || { gum style --foreground 196 "authkey required"; exit 1; }
+
+printf '\n'
+gum style --border normal --padding "0 1" \
+    "District:      ${DISTRICT}" \
+    "School CIDR:   ${CIDR}" \
+    "Hostname:      ${HOSTNAME_HINT:-<auto: ${DISTRICT}-pi-XXXX>}" \
+    "Authkey:       ${AUTHKEY:0:12}… (hidden)"
+
+gum confirm "Write config and start enrollment?" || { gum style --foreground 208 "aborted"; exit 1; }
+
+jq -n \
+    --arg authkey  "${AUTHKEY}" \
+    --arg district "${DISTRICT}" \
+    --arg route    "${CIDR}" \
+    --arg hostname "${HOSTNAME_HINT}" \
+    '{authkey:$authkey, district:$district, advertise_routes:[$route]}
+     + (if $hostname == "" then {} else {hostname:$hostname} end)' \
+    > "${ENROLL_CONFIG}"
+chmod 0600 "${ENROLL_CONFIG}"
+
+gum style --foreground 042 "Config written to ${ENROLL_CONFIG}"
+
+systemctl reset-failed first-boot.service 2>/dev/null || true
+systemctl start --no-block first-boot.service
+
+gum spin --title "Enrolling (Pi will reboot on success)…" -- sleep 6
+journalctl -u first-boot.service -n 40 --no-pager || true
+
+gum style --border double --padding "1 2" --margin "1 0" --foreground 042 --border-foreground 042 \
+    "If you see 'enrollment complete' above, the Pi will reboot shortly." \
+    "Reconnect via the Tailscale admin panel or the new hostname." \
+    "Pi is ready to power off (sudo poweroff) and ship once it's back online."
