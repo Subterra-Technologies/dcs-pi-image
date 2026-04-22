@@ -58,9 +58,12 @@ if [[ -z "${TOKEN}" ]]; then
     exit 1
 fi
 
+# Description can't contain ':' — Tailscale validates it as if it were a
+# DNS-ish label. Use the bare TAG (e.g. "pi-acadia") instead of FULL_TAG
+# ("tag:pi-acadia") so the colon doesn't leak in.
 BODY=$(jq -n \
     --arg tag  "${FULL_TAG}" \
-    --arg desc "dcs-setup auto-mint for ${FULL_TAG}" \
+    --arg desc "dcs-setup auto-mint ${TAG}" \
     '{
       capabilities: {
         devices: {
