@@ -13,8 +13,9 @@
 #   DCS_TS_OAUTH_CLIENT_SECRET=...
 #   DCS_TS_TAILNET=-            # "-" = the OAuth client's own tailnet
 #
-# Required OAuth scope: auth_keys:write
-#   (The same OAuth client can also hold devices:read for dcs-districts.)
+# Required OAuth scope: auth_keys (Write), with the target tags selected on
+# the OAuth client. (The same client can also hold devices:core Read for
+# dcs-districts / dcs-query.)
 
 set -euo pipefail
 
@@ -72,7 +73,7 @@ RESPONSE=$(curl -sSf -X POST \
 KEY=$(printf '%s\n' "${RESPONSE}" | jq -r '.key // empty')
 
 if [[ -z "${KEY}" ]]; then
-    echo "dcs-mint-key: API rejected request (check auth_keys:write scope and tag owners)" >&2
+    echo "dcs-mint-key: API rejected request (check auth_keys Write scope, tag selection on the OAuth client, and tagOwners in ACL)" >&2
     exit 1
 fi
 

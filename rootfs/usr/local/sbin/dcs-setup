@@ -84,8 +84,8 @@ ensure_oauth_creds() {
     fi
 
     section "Tailscale OAuth client (one-time)"
-    muted "Mint at: https://login.tailscale.com/admin/settings/oauth"
-    muted "Scopes: devices:read + auth_keys:write"
+    muted "Mint at: https://login.tailscale.com/admin/settings/trust-credentials"
+    muted "Scopes: devices:core (Read) + auth_keys (Write, with your pi-* tags)"
     muted "Client secret starts with 'tskey-client-' (not 'tskey-auth-')."
     muted "Stored in ${DCS_CONF} (0600) so future Pis on this image skip this step."
 
@@ -105,7 +105,7 @@ ensure_oauth_creds() {
             ok "OAuth creds validated"
             umask 077
             cat > "${DCS_CONF}" <<EOF
-# Tailscale API creds. Scopes: devices:read, auth_keys:write.
+# Tailscale API creds. Scopes: devices:core:read, auth_keys (tag-scoped).
 DCS_TS_OAUTH_CLIENT_ID=${DCS_TS_OAUTH_CLIENT_ID}
 DCS_TS_OAUTH_CLIENT_SECRET=${DCS_TS_OAUTH_CLIENT_SECRET}
 DCS_TS_TAILNET=${DCS_TS_TAILNET:--}
@@ -244,7 +244,7 @@ else
         printf '  %s\n' "${MINT_OUT}"
         muted "Common causes:"
         muted "  • tag:pi-${DISTRICT} not declared in ACL tagOwners / autoApprovers"
-        muted "  • OAuth client missing the auth_keys:write scope"
+        muted "  • OAuth client missing the auth_keys (Write) scope for this tag"
         if gum confirm "Paste a pre-minted auth key instead?"; then
             AUTHKEY=$(gum input --password --prompt "› ")
             [[ -n "${AUTHKEY}" ]] || { err "authkey required"; exit 1; }

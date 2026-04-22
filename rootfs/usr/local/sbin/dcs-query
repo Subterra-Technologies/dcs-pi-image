@@ -6,7 +6,7 @@
 #   dcs-query hostnames <tag>    hostnames of devices carrying <tag>
 #                                (tag: prefix optional)
 #
-# Reads OAuth creds from /etc/dcs.conf (or $DCS_CONF). Scope: devices:read.
+# Reads OAuth creds from /etc/dcs.conf (or $DCS_CONF). Scope: devices:core (Read).
 #
 # Exit codes:
 #   0  success (may print nothing if no matches)
