@@ -62,6 +62,7 @@ sudo dcs status       # enrollment state, routes, peers
 sudo dcs stats        # uptime, load, temp, Zabbix proxy
 sudo dcs logs         # pick a service, tail the journal
 sudo dcs routes       # view/edit advertised subnets
+sudo dcs update       # pull latest dcs scripts + units from the repo
 sudo dcs reconfigure  # re-run setup (swap district or authkey)
 sudo dcs reset        # logout + wipe local state
 ```

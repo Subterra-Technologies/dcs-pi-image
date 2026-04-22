@@ -61,7 +61,7 @@ EOF
 
 echo "==> [2/7] apt install"
 apt-get update -qq
-DEBIAN_FRONTEND=noninteractive apt-get install -y tailscale gum jq
+DEBIAN_FRONTEND=noninteractive apt-get install -y tailscale gum jq git
 
 echo "==> [3/7] ensure 'dcs' user"
 if ! id -u dcs >/dev/null 2>&1; then
@@ -113,6 +113,14 @@ systemctl enable first-boot.service
 systemctl enable dcs-heartbeat.timer 2>/dev/null || true
 
 install -d -m 0755 /var/lib/dcs
+
+# Record the SHA we installed from so `dcs update` can show a changelog
+# between here and whatever's on main. No-op for HTTP/non-git sources.
+if [[ ! "${DCS_SRC}" =~ ^https?:// ]] \
+    && git -C "${DCS_SRC}" rev-parse HEAD >/dev/null 2>&1
+then
+    git -C "${DCS_SRC}" rev-parse HEAD > /var/lib/dcs/installed-sha
+fi
 
 echo "==> [7/7] launching dcs-setup TUI"
 echo ""
