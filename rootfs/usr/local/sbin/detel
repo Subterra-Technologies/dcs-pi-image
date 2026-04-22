@@ -64,7 +64,7 @@ peer_counts() {
 }
 
 cmd_status() {
-    header "Detel Pi — Status"
+    header "◆ SCHOOL SIDE ◆  Detel Pi — Status"
     local enr district hostname routes tn_ip tn_state_s peers
     if is_enrolled; then
         enr="$(gum style --foreground "${C_OK}" "✓ yes")  $(muted "since $(meta enrolled_at)")"
@@ -93,7 +93,7 @@ cmd_status() {
 }
 
 cmd_stats() {
-    header "Detel Pi — Stats"
+    header "◆ SCHOOL SIDE ◆  Detel Pi — Stats"
     local up load mem disk zabbix temp
     up=$(uptime -p | sed 's/^up //')
     load=$(awk '{print $1", "$2", "$3}' /proc/loadavg)
@@ -153,7 +153,7 @@ cmd_logs() {
 }
 
 cmd_routes() {
-    header "Detel Pi — Advertised routes"
+    header "◆ SCHOOL SIDE ◆  Detel Pi — Advertised routes"
     if ! command -v tailscale >/dev/null; then
         err "tailscale not installed"; exit 1
     fi
@@ -217,13 +217,13 @@ cmd_reset() {
 
 cmd_menu() {
     if ! is_enrolled; then
-        header "Detel Pi"
+        header "◆ SCHOOL SIDE ◆  Detel Pi"
         warn "This Pi has no enrollment state yet."
         gum confirm "Run detel-setup now?" || exit 0
         exec /usr/local/sbin/detel-setup
     fi
 
-    header "Detel Pi — $(meta district) / $(meta hostname)"
+    header "◆ SCHOOL SIDE ◆  Detel Pi — $(meta district) / $(meta hostname)"
     local choice
     choice=$(gum choose --cursor "› " --header "What would you like to do?" \
         "status       — current state summary" \

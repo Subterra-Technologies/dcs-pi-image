@@ -54,7 +54,12 @@ slugify() {
     printf '%s' "$s"
 }
 
-header "Detel Pi Setup" "" "Provision this Pi for a district before deployment."
+header \
+    "◆ SCHOOL SIDE ◆" \
+    "" \
+    "Detel Pi Setup" \
+    "" \
+    "Appliance deployed at the school — district subnet router."
 
 if [[ -f "${STATE_DIR}/enrolled" ]]; then
     warn "This Pi is already enrolled."

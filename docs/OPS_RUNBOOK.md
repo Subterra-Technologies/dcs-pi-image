@@ -19,7 +19,7 @@ Control plane is **Tailscale SaaS**. No self-hosted coordinator.
 
 ## 2. Onboarding a new district
 
-### 2a. Provision the Pi (office, TUI flow — primary path)
+### 2a. Provision the Pi — ◆ SCHOOL SIDE ◆ (office, TUI flow — primary path)
 
 In the Tailscale admin console: create a tag-scoped pre-auth key for the district's `tag:pi-<slug>`. Copy the `tskey-auth-...` string.
 
@@ -61,20 +61,33 @@ If you can't SSH to the Pi (e.g. no office LAN at flash time), mount the boot pa
 
 Fields: `authkey` and `district` required. `advertise_routes` optional (the enroll script merges any auto-detected primary subnet on top). `hostname` optional (default `<district>-pi-<serial8>`).
 
-### 2c. Stand up Zabbix VMs for the district
+### 2c. Stand up Zabbix VMs for the district — ◆ MONITORING SIDE ◆ (TUI flow)
 
 For each Zabbix VM:
 
 - Create the VM on Proxmox. No public IP needed; only outbound internet.
-- Issue a Tailscale pre-auth key scoped to `tag:zabbix-<slug>`.
+- In the Tailscale admin console, mint a pre-auth key scoped to `tag:zabbix-<slug>`. One-time, reusable=off, ephemeral=off.
 - On the Zabbix VM:
   ```
-  git clone <detel-hub repo> /tmp/hub
-  sudo /tmp/hub/zabbix-vm/bootstrap.sh \
-      --authkey tskey-auth-... \
-      --hostname zabbix-<slug>-a
+  git clone https://github.com/Subterra-Technologies/detel-hub /tmp/hub
+  sudo bash /tmp/hub/zabbix-vm/install.sh
   ```
-- Verify in the Tailscale admin panel that the Zabbix node is online with its district tag.
+  The installer ensures `tailscale`, `gum`, and `jq` are present, drops `detel-setup` + `detel` into `/usr/local/sbin`, then launches the TUI. Answer three prompts:
+  - District slug (e.g. `oakridge`)
+  - Hostname (blank = auto `zabbix-<slug>-a`; use `-b`, `-c` for additional VMs)
+  - Paste the Tailscale authkey
+  The TUI runs `tailscale up --authkey … --ssh --accept-routes --accept-dns=false`, validates the assigned tag, and persists `/var/lib/detel/enrollment.json`.
+- Verify in the Tailscale admin panel that the Zabbix node is online with its district tag and that the district's Pi routes show as reachable.
+
+**Headless alternative (CI / scripted deploys):** skip the TUI and call `bootstrap.sh` with flags:
+```
+sudo /tmp/hub/zabbix-vm/bootstrap.sh \
+    --authkey tskey-auth-... \
+    --hostname zabbix-<slug>-a
+```
+Same effect, no prompts.
+
+After enrollment, the admin TUI is available as `sudo detel` (menu: status / logs / reconfigure / reset).
 
 ### 2d. Configure Zabbix hosts
 
