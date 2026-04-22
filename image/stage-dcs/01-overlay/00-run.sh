@@ -1,5 +1,5 @@
 #!/bin/bash -e
-# Copy the Detel rootfs overlay into the image.
+# Copy the DCS rootfs overlay into the image.
 
 OVERLAY="${STAGE_DIR}/rootfs"
 if [ ! -d "${OVERLAY}" ]; then
@@ -13,12 +13,12 @@ rsync -a \
     "${OVERLAY}/" "${ROOTFS_DIR}/"
 
 # Fix perms on executables and sensitive paths.
-chmod 0755 "${ROOTFS_DIR}/usr/local/sbin/detel-enroll"
-chmod 0755 "${ROOTFS_DIR}/usr/local/sbin/detel-heartbeat"
-chmod 0755 "${ROOTFS_DIR}/usr/local/sbin/detel-setup"
-chmod 0755 "${ROOTFS_DIR}/usr/local/sbin/detel"
+chmod 0755 "${ROOTFS_DIR}/usr/local/sbin/dcs-enroll"
+chmod 0755 "${ROOTFS_DIR}/usr/local/sbin/dcs-heartbeat"
+chmod 0755 "${ROOTFS_DIR}/usr/local/sbin/dcs-setup"
+chmod 0755 "${ROOTFS_DIR}/usr/local/sbin/dcs"
 install -d -m 0700 "${ROOTFS_DIR}/etc/wireguard"
-install -d -m 0755 "${ROOTFS_DIR}/var/lib/detel"
+install -d -m 0755 "${ROOTFS_DIR}/var/lib/dcs"
 
 # Merge our additions into the pi-gen-produced boot config files.
 if [ -f "${OVERLAY}/boot/firmware/config.txt.append" ]; then

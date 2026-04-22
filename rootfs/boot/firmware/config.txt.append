@@ -1,4 +1,4 @@
-# === Detel additions ===
+# === DCS additions ===
 # Enable hardware watchdog (BCM2712 on Pi 5)
 dtparam=watchdog=on
 

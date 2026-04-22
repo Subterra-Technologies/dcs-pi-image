@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# detel: admin TUI for a deployed Detel Pi.
+# dcs: admin TUI for a deployed DCS Pi.
 #
 # Usage:
-#   detel               → interactive menu
-#   detel status        → current state summary
-#   detel stats         → uptime, peers, NAT
-#   detel logs          → pick a service, tail journal
-#   detel routes        → view/edit advertised subnets
-#   detel reconfigure   → wipe state + re-run detel-setup
-#   detel reset         → tailnet logout + wipe local enrollment state
-#   detel help          → this text
+#   dcs               → interactive menu
+#   dcs status        → current state summary
+#   dcs stats         → uptime, peers, NAT
+#   dcs logs          → pick a service, tail journal
+#   dcs routes        → view/edit advertised subnets
+#   dcs reconfigure   → wipe state + re-run dcs-setup
+#   dcs reset         → tailnet logout + wipe local enrollment state
+#   dcs help          → this text
 
 set -euo pipefail
 
@@ -17,7 +17,7 @@ if [[ $EUID -ne 0 ]]; then
     exec sudo "$0" "$@"
 fi
 
-STATE_DIR=/var/lib/detel
+STATE_DIR=/var/lib/dcs
 ENROLL_META="${STATE_DIR}/enrollment.json"
 ENROLL_SENTINEL="${STATE_DIR}/enrolled"
 
@@ -64,12 +64,12 @@ peer_counts() {
 }
 
 cmd_status() {
-    header "◆ SCHOOL SIDE ◆  Detel Pi — Status"
+    header "◆ SCHOOL SIDE ◆  DCS Pi — Status"
     local enr district hostname routes tn_ip tn_state_s peers
     if is_enrolled; then
         enr="$(gum style --foreground "${C_OK}" "✓ yes")  $(muted "since $(meta enrolled_at)")"
     else
-        enr="$(gum style --foreground "${C_ERR}" "✗ no") $(muted "(run 'detel-setup')")"
+        enr="$(gum style --foreground "${C_ERR}" "✗ no") $(muted "(run 'dcs-setup')")"
     fi
     district=$(meta district)
     hostname=$(meta hostname)
@@ -93,7 +93,7 @@ cmd_status() {
 }
 
 cmd_stats() {
-    header "◆ SCHOOL SIDE ◆  Detel Pi — Stats"
+    header "◆ SCHOOL SIDE ◆  DCS Pi — Stats"
     local up load mem disk zabbix temp
     up=$(uptime -p | sed 's/^up //')
     load=$(awk '{print $1", "$2", "$3}' /proc/loadavg)
@@ -135,12 +135,12 @@ cmd_logs() {
     svc=$(gum choose --cursor "› " --header "Which service?" \
         "Enrollment (first-boot.service)" \
         "Tailscale (tailscaled)" \
-        "Heartbeat (detel-heartbeat.service)" \
+        "Heartbeat (dcs-heartbeat.service)" \
         "System journal")
     case "${svc}" in
         Enrollment*) unit=first-boot.service ;;
         Tailscale*)  unit=tailscaled ;;
-        Heartbeat*)  unit=detel-heartbeat.service ;;
+        Heartbeat*)  unit=dcs-heartbeat.service ;;
         System*)     unit="" ;;
         *) exit 0 ;;
     esac
@@ -153,7 +153,7 @@ cmd_logs() {
 }
 
 cmd_routes() {
-    header "◆ SCHOOL SIDE ◆  Detel Pi — Advertised routes"
+    header "◆ SCHOOL SIDE ◆  DCS Pi — Advertised routes"
     if ! command -v tailscale >/dev/null; then
         err "tailscale not installed"; exit 1
     fi
@@ -202,9 +202,9 @@ cmd_routes() {
 }
 
 cmd_reconfigure() {
-    warn "Reconfigure wipes local enrollment and re-runs detel-setup."
+    warn "Reconfigure wipes local enrollment and re-runs dcs-setup."
     gum confirm "Proceed?" || exit 0
-    exec /usr/local/sbin/detel-setup
+    exec /usr/local/sbin/dcs-setup
 }
 
 cmd_reset() {
@@ -212,18 +212,18 @@ cmd_reset() {
     gum confirm "Proceed?" || exit 0
     tailscale logout 2>/dev/null || true
     rm -f "${ENROLL_SENTINEL}" "${ENROLL_META}"
-    ok "Reset complete. Run 'detel-setup' to re-enroll."
+    ok "Reset complete. Run 'dcs-setup' to re-enroll."
 }
 
 cmd_menu() {
     if ! is_enrolled; then
-        header "◆ SCHOOL SIDE ◆  Detel Pi"
+        header "◆ SCHOOL SIDE ◆  DCS Pi"
         warn "This Pi has no enrollment state yet."
-        gum confirm "Run detel-setup now?" || exit 0
-        exec /usr/local/sbin/detel-setup
+        gum confirm "Run dcs-setup now?" || exit 0
+        exec /usr/local/sbin/dcs-setup
     fi
 
-    header "◆ SCHOOL SIDE ◆  Detel Pi — $(meta district) / $(meta hostname)"
+    header "◆ SCHOOL SIDE ◆  DCS Pi — $(meta district) / $(meta hostname)"
     local choice
     choice=$(gum choose --cursor "› " --header "What would you like to do?" \
         "status       — current state summary" \
@@ -246,17 +246,17 @@ cmd_menu() {
 
 usage() {
     cat <<EOF
-detel — admin TUI for a deployed Detel Pi
+dcs — admin TUI for a deployed DCS Pi
 
 Usage:
-  detel [SUBCOMMAND]
+  dcs [SUBCOMMAND]
 
 Subcommands:
   status        current state summary
   stats         uptime, peers, NAT
   logs          pick a service, show recent journal entries
   routes        view or edit advertised subnets
-  reconfigure   wipe state + re-run detel-setup
+  reconfigure   wipe state + re-run dcs-setup
   reset         log out of tailnet + wipe local enrollment state
   help          show this help
 

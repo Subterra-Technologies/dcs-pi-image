@@ -1,12 +1,12 @@
 [Unit]
-Description=Detel first-boot enrollment
+Description=DCS first-boot enrollment
 After=network-online.target
 Wants=network-online.target
-ConditionPathExists=!/var/lib/detel/enrolled
+ConditionPathExists=!/var/lib/dcs/enrolled
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/detel-enroll
+ExecStart=/usr/local/sbin/dcs-enroll
 StandardOutput=journal
 StandardError=journal
 Restart=on-failure

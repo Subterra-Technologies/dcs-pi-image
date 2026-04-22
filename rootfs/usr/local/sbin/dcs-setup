@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# detel-setup: interactive TUI to provision a Detel Pi before office → site deploy.
+# dcs-setup: interactive TUI to provision a DCS Pi before office → site deploy.
 #
 # Flow:
 #   1. Collect district, 1+ school LAN CIDRs, hostname hint, paste tailscale authkey
-#   2. Write /boot/firmware/detel-enroll.json with explicit advertise_routes
-#   3. Kick first-boot.service; detel-enroll runs, joins tailnet, reboots
+#   2. Write /boot/firmware/dcs-enroll.json with explicit advertise_routes
+#   3. Kick first-boot.service; dcs-enroll runs, joins tailnet, reboots
 #
 # After this succeeds the Pi is fully enrolled with the *school's* LAN(s) advertised,
 # even though it's physically sitting in the office. Ship it; it will come online
@@ -16,8 +16,8 @@ if [[ $EUID -ne 0 ]]; then
     exec sudo "$0" "$@"
 fi
 
-ENROLL_CONFIG=/boot/firmware/detel-enroll.json
-STATE_DIR=/var/lib/detel
+ENROLL_CONFIG=/boot/firmware/dcs-enroll.json
+STATE_DIR=/var/lib/dcs
 
 # Palette
 C_BRAND=99      # purple
@@ -57,7 +57,7 @@ slugify() {
 header \
     "◆ SCHOOL SIDE ◆" \
     "" \
-    "Detel Pi Setup" \
+    "DCS Pi Setup" \
     "" \
     "Appliance deployed at the school — district subnet router."
 
@@ -125,7 +125,7 @@ gum style --border normal --border-foreground "${C_MUTED}" --padding "0 2" \
 
 gum confirm "Write config and start enrollment?" || { warn "aborted"; exit 1; }
 
-# Build JSON array from CIDRS (may be empty → detel-enroll will auto-detect)
+# Build JSON array from CIDRS (may be empty → dcs-enroll will auto-detect)
 if [[ ${#CIDRS[@]} -gt 0 ]]; then
     ROUTES_JSON=$(printf '%s\n' "${CIDRS[@]}" | jq -R . | jq -s .)
 else
@@ -168,13 +168,13 @@ case "${tagcheck_line}" in
         muted "Fix:"
         muted "  1. In the Tailscale admin, remove this node"
         muted "  2. Mint a new authkey with Tags = tag:pi-${DISTRICT}"
-        muted "  3. Run \`sudo detel reset\` then \`sudo detel-setup\`"
+        muted "  3. Run \`sudo dcs reset\` then \`sudo dcs-setup\`"
         ;;
     *"TAGCHECK SKIPPED"*)
         muted "(skipped — dry run)"
         ;;
     *)
-        muted "(no tag check result found in journal yet — check \`sudo detel status\` after reboot)"
+        muted "(no tag check result found in journal yet — check \`sudo dcs status\` after reboot)"
         ;;
 esac
 

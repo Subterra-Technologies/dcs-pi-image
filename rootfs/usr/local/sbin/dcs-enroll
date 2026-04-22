@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# First-boot enrollment for a Detel Pi (Tailscale SaaS).
+# First-boot enrollment for a DCS Pi (Tailscale SaaS).
 #
-# Reads the pre-auth key from /boot/firmware/detel-enroll.json, joins
+# Reads the pre-auth key from /boot/firmware/dcs-enroll.json, joins
 # the Tailscale tailnet, advertises the district's school-LAN subnets.
 # Routes auto-approve via the tailnet ACL's autoApprovers for the Pi's tag.
 #
@@ -10,14 +10,14 @@
 # Pi can advertise and what district Zabbix can reach it.
 set -euo pipefail
 
-STATE_DIR="${DETEL_STATE_DIR:-/var/lib/detel}"
-ENROLL_CONFIG="${DETEL_ENROLL_CONFIG:-/boot/firmware/detel-enroll.json}"
-DRY_RUN="${DETEL_DRY_RUN:-0}"
+STATE_DIR="${DCS_STATE_DIR:-/var/lib/dcs}"
+ENROLL_CONFIG="${DCS_ENROLL_CONFIG:-/boot/firmware/dcs-enroll.json}"
+DRY_RUN="${DCS_DRY_RUN:-0}"
 
 ENROLL_SENTINEL="${STATE_DIR}/enrolled"
 ENROLL_META="${STATE_DIR}/enrollment.json"
 
-LOG_TAG=detel-enroll
+LOG_TAG=dcs-enroll
 log() { printf '%s: %s\n' "${LOG_TAG}" "$*" >&2; }
 die() { log "FATAL: $*"; exit 1; }
 priv() {
@@ -88,8 +88,8 @@ log "routes to advertise: ${ADVERTISE_ROUTES:-<none>}"
 
 # Hostname = explicit hint, else <district>-<short-serial>
 if [[ -z "${HOSTNAME_HINT}" ]]; then
-    if [[ -n "${DETEL_SERIAL:-}" ]]; then
-        SERIAL_SHORT="${DETEL_SERIAL}"
+    if [[ -n "${DCS_SERIAL:-}" ]]; then
+        SERIAL_SHORT="${DCS_SERIAL}"
     elif [[ -r /sys/firmware/devicetree/base/serial-number ]]; then
         SERIAL_SHORT="$(tr -d '\0' < /sys/firmware/devicetree/base/serial-number | tail -c 8)"
     else
@@ -117,7 +117,7 @@ log "joining tailnet (Tailscale SaaS)"
 priv tailscale "${args[@]}"
 
 # Sanity-check that the authkey was tag-scoped for this district.
-# Result is logged with TAGCHECK {PASS|FAIL|SKIPPED} so detel-setup can
+# Result is logged with TAGCHECK {PASS|FAIL|SKIPPED} so dcs-setup can
 # surface it prominently. We never block enrollment on a tag mismatch —
 # the Pi is already on the tailnet — but a FAIL tells ops to revoke the
 # key, mint a properly-scoped one, and rerun.

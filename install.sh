@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
-# Detel Pi bootstrap — turn a fresh Raspberry Pi OS install into a Detel Pi.
+# DCS Pi bootstrap — turn a fresh Raspberry Pi OS install into a DCS Pi.
 #
 # Fresh-Pi flow:
 #   1. rpi-imager → Raspberry Pi OS Lite, Advanced options: set SSH pubkey, enable SSH
 #   2. ssh <user>@<pi>.local
-#   3. curl -fsSL http://<lan>:8000/install.sh | DETEL_SRC=http://<lan>:8000 sudo -E bash
+#   3. curl -fsSL http://<lan>:8000/install.sh | DCS_SRC=http://<lan>:8000 sudo -E bash
 #
-# After install, detel-setup TUI launches automatically. Answer the prompts and
+# After install, dcs-setup TUI launches automatically. Answer the prompts and
 # the Pi joins the tailnet.
 #
-# DETEL_SRC can be either an HTTP(S) URL (LAN server) or a local repo checkout.
+# DCS_SRC can be either an HTTP(S) URL (LAN server) or a local repo checkout.
 
 set -euo pipefail
 
 [[ $EUID -eq 0 ]] || { echo "run as root (use sudo -E)"; exit 1; }
 
-DETEL_SRC="${DETEL_SRC:-}"
-[[ -n "${DETEL_SRC}" ]] || {
-    echo "DETEL_SRC is required."
-    echo "  URL form:   DETEL_SRC=http://<lan>:8000 sudo -E bash install.sh"
-    echo "  Local form: DETEL_SRC=/path/to/detel-pi-image sudo -E bash install.sh"
+DCS_SRC="${DCS_SRC:-}"
+[[ -n "${DCS_SRC}" ]] || {
+    echo "DCS_SRC is required."
+    echo "  URL form:   DCS_SRC=http://<lan>:8000 sudo -E bash install.sh"
+    echo "  Local form: DCS_SRC=/path/to/dcs-pi-image sudo -E bash install.sh"
     exit 1
 }
 
@@ -27,10 +27,10 @@ fetch() {
     # fetch <repo-relative-path> <dest-absolute-path>
     local src_rel="$1" dst="$2"
     mkdir -p "$(dirname "${dst}")"
-    if [[ "${DETEL_SRC}" =~ ^https?:// ]]; then
-        curl -fsSL "${DETEL_SRC%/}/${src_rel}" -o "${dst}"
+    if [[ "${DCS_SRC}" =~ ^https?:// ]]; then
+        curl -fsSL "${DCS_SRC%/}/${src_rel}" -o "${dst}"
     else
-        cp "${DETEL_SRC%/}/${src_rel}" "${dst}"
+        cp "${DCS_SRC%/}/${src_rel}" "${dst}"
     fi
 }
 
@@ -58,16 +58,16 @@ echo "==> [2/7] apt install"
 apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y tailscale gum jq
 
-echo "==> [3/7] ensure 'detel' user"
-if ! id -u detel >/dev/null 2>&1; then
-    useradd -m -s /bin/bash -G sudo detel
-    echo "  created user detel"
-    # Copy SSH key from whoever invoked sudo, so ops can immediately ssh detel@...
+echo "==> [3/7] ensure 'dcs' user"
+if ! id -u dcs >/dev/null 2>&1; then
+    useradd -m -s /bin/bash -G sudo dcs
+    echo "  created user dcs"
+    # Copy SSH key from whoever invoked sudo, so ops can immediately ssh dcs@...
     if [[ -n "${SUDO_USER:-}" ]] && [[ -f "/home/${SUDO_USER}/.ssh/authorized_keys" ]]; then
-        install -d -m 0700 -o detel -g detel /home/detel/.ssh
-        install -m 0600 -o detel -g detel "/home/${SUDO_USER}/.ssh/authorized_keys" \
-            /home/detel/.ssh/authorized_keys
-        echo "  copied SSH pubkey from ${SUDO_USER} → detel"
+        install -d -m 0700 -o dcs -g dcs /home/dcs/.ssh
+        install -m 0600 -o dcs -g dcs "/home/${SUDO_USER}/.ssh/authorized_keys" \
+            /home/dcs/.ssh/authorized_keys
+        echo "  copied SSH pubkey from ${SUDO_USER} → dcs"
     fi
 fi
 
@@ -79,23 +79,23 @@ sed -i \
     /etc/ssh/sshd_config
 systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
 
-echo "==> [5/7] install detel scripts"
-for script in detel-enroll detel-heartbeat detel-setup detel; do
+echo "==> [5/7] install dcs scripts"
+for script in dcs-enroll dcs-heartbeat dcs-setup dcs; do
     fetch "rootfs/usr/local/sbin/${script}" "/usr/local/sbin/${script}"
     chmod 0755 "/usr/local/sbin/${script}"
 done
 
 echo "==> [6/7] install systemd units"
-for unit in first-boot.service detel-heartbeat.service detel-heartbeat.timer; do
+for unit in first-boot.service dcs-heartbeat.service dcs-heartbeat.timer; do
     fetch "rootfs/etc/systemd/system/${unit}" "/etc/systemd/system/${unit}"
 done
 systemctl daemon-reload
 systemctl enable tailscaled.service
 systemctl enable first-boot.service
-systemctl enable detel-heartbeat.timer 2>/dev/null || true
+systemctl enable dcs-heartbeat.timer 2>/dev/null || true
 
-install -d -m 0755 /var/lib/detel
+install -d -m 0755 /var/lib/dcs
 
-echo "==> [7/7] launching detel-setup TUI"
+echo "==> [7/7] launching dcs-setup TUI"
 echo ""
-exec /usr/local/sbin/detel-setup
+exec /usr/local/sbin/dcs-setup
