@@ -118,6 +118,90 @@ EOF
     done
 }
 
+# Read-only check that the tailnet ACL is ready for a Pi in this district.
+# We verify tag:pi-<district> is declared in tagOwners and that each CIDR the
+# operator wants to advertise has tag:pi-<district> listed as an autoApprover.
+# On mismatch we print a copy-pasteable HuJSON fragment and exit — we never
+# write to the ACL, because round-tripping through jq would strip comments
+# from the tailnet policy file.
+precheck_acl() {
+    local district="$1"; shift
+    local -a cidrs=("$@")
+    local tag="tag:pi-${district}"
+    local tailnet="${DCS_TS_TAILNET:--}"
+
+    section "ACL precheck"
+
+    local token
+    token=$(curl -sSf -X POST https://api.tailscale.com/api/v2/oauth/token \
+        -d "client_id=${DCS_TS_OAUTH_CLIENT_ID:-}" \
+        -d "client_secret=${DCS_TS_OAUTH_CLIENT_SECRET:-}" \
+        -d "grant_type=client_credentials" 2>/dev/null \
+        | jq -r '.access_token // empty' || true)
+    if [[ -z "${token}" ]]; then
+        warn "Couldn't mint an API token — skipping ACL precheck."
+        return 0
+    fi
+
+    local acl http
+    acl=$(curl -sS -w '\n%{http_code}' \
+        -H "Authorization: Bearer ${token}" \
+        -H "Accept: application/json" \
+        "https://api.tailscale.com/api/v2/tailnet/${tailnet}/acl" 2>/dev/null || true)
+    http="${acl##*$'\n'}"
+    acl="${acl%$'\n'*}"
+    if [[ "${http}" != "200" ]]; then
+        warn "ACL read failed (HTTP ${http:-?}) — OAuth client likely lacks policy_file scope."
+        muted "Skipping precheck. If auto-mint fails, check tagOwners + autoApprovers manually."
+        return 0
+    fi
+
+    local missing_owner=0
+    if ! printf '%s' "${acl}" | jq -e --arg tag "${tag}" '.tagOwners[$tag]' >/dev/null 2>&1; then
+        missing_owner=1
+    fi
+
+    local -a missing_routes=()
+    local c
+    for c in "${cidrs[@]}"; do
+        if ! printf '%s' "${acl}" \
+            | jq -e --arg cidr "${c}" --arg tag "${tag}" \
+                '(.autoApprovers.routes[$cidr] // []) | any(. == $tag)' \
+                >/dev/null 2>&1
+        then
+            missing_routes+=("${c}")
+        fi
+    done
+
+    if [[ "${missing_owner}" -eq 0 && "${#missing_routes[@]}" -eq 0 ]]; then
+        ok "ACL already grants ${tag} with route auto-approval"
+        [[ "${#cidrs[@]}" -eq 0 ]] && muted "(no CIDRs entered — autoApprovers check skipped; first-boot will auto-detect)"
+        return 0
+    fi
+
+    err "ACL is missing entries for ${tag} — fix before enrollment:"
+    muted "Edit at https://login.tailscale.com/admin/acls/file"
+    printf '\n'
+
+    local -a lines=()
+    if [[ "${missing_owner}" -eq 1 ]]; then
+        lines+=("Add under \"tagOwners\":")
+        lines+=("  \"${tag}\": [\"autogroup:admin\"],")
+    fi
+    if [[ "${#missing_routes[@]}" -gt 0 ]]; then
+        [[ "${#lines[@]}" -gt 0 ]] && lines+=("")
+        lines+=("Add under \"autoApprovers\" → \"routes\":")
+        for c in "${missing_routes[@]}"; do
+            lines+=("  \"${c}\": [\"${tag}\"],")
+        done
+    fi
+    gum style --border normal --border-foreground "${C_INFO}" --padding "0 2" "${lines[@]}"
+
+    printf '\n'
+    warn "Save the ACL, then re-run: sudo dcs-setup"
+    exit 1
+}
+
 header \
     "◆ SCHOOL SIDE ◆" \
     "" \
@@ -192,6 +276,13 @@ if [[ ${#CIDRS[@]} -eq 0 ]]; then
     warn "No CIDR entered — will auto-detect the primary subnet at first boot."
     warn "If you're shipping this Pi office → school, cancel and enter the school's CIDR now."
     gum confirm "Continue without explicit CIDRs?" || { warn "aborted"; exit 1; }
+fi
+
+# Fail fast if the tailnet ACL lacks the tag/autoApprover entries we need.
+# Skippable via DCS_AUTHKEY (we're trusting the operator knows what they're
+# doing when they supply a pre-minted key).
+if [[ -z "${DCS_AUTHKEY:-}" ]]; then
+    precheck_acl "${DISTRICT}" "${CIDRS[@]}"
 fi
 
 section "Hostname"
