@@ -8,13 +8,15 @@
 #   3. Clone this repo and run the installer:
 #        git clone https://github.com/Subterra-Technologies/dcs-pi-image /tmp/dcs
 #        sudo bash /tmp/dcs/install.sh
-#      Or, with OAuth auto-mint enabled:
-#        export DCS_TS_OAUTH_CLIENT_ID=...
-#        export DCS_TS_OAUTH_CLIENT_SECRET=...
-#        sudo -E bash /tmp/dcs/install.sh
 #
-# After install, dcs-setup TUI launches automatically. Answer the prompts and
-# the Pi joins the tailnet.
+# After install, the dcs-setup TUI launches automatically and walks through
+# OAuth (first Pi only), district, CIDRs, hostname, then auto-mints the
+# tag-scoped auth key. No keys to paste.
+#
+# Advanced: pre-bake OAuth creds to skip the TUI's OAuth step:
+#   export DCS_TS_OAUTH_CLIENT_ID=...
+#   export DCS_TS_OAUTH_CLIENT_SECRET=...
+#   sudo -E bash /tmp/dcs/install.sh
 #
 # Advanced: DCS_SRC can point at an HTTP(S) URL (LAN mirror) or an alternate
 # local checkout. By default it's the directory this script lives in.

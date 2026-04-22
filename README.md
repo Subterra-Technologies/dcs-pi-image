@@ -27,21 +27,21 @@ Each Pi ships to a school with DCS installed. On first boot after enrollment it 
 3. **Clone and run the installer:**
    ```
    git clone https://github.com/Subterra-Technologies/dcs-pi-image /tmp/dcs
-   # Optional: auto-populate CIDRs + hostname suggestions via the Tailscale API
-   export DCS_TS_OAUTH_CLIENT_ID=<id>
-   export DCS_TS_OAUTH_CLIENT_SECRET=<secret>
-   sudo -E bash /tmp/dcs/install.sh
+   sudo bash /tmp/dcs/install.sh
    ```
-   The installer pulls `tailscale`, `gum`, and `jq`, creates the `dcs` user, installs the DCS binaries + systemd units, persists any OAuth creds to `/etc/dcs.conf`, and launches `dcs-setup`.
+   The installer pulls `tailscale`, `gum`, and `jq`, creates the `dcs` user, installs the DCS binaries + systemd units, and launches `dcs-setup`.
 4. **Answer the TUI prompts:**
+   - **OAuth client** (first Pi on this image only) — client ID + client secret from https://login.tailscale.com/admin/settings/oauth with scopes `devices:read` and `auth_keys:write`. Stored at `/etc/dcs.conf` and reused on subsequent setups.
    - **District slug** — e.g. `oakridge`
-   - **School LAN CIDRs** — if another Pi is already enrolled in this district, its advertised routes auto-populate and you can accept them with a keystroke (prevents drift across redundant Pi pairs). Otherwise type the CIDR, e.g. `10.42.0.0/24`.
-   - **Hostname** — auto-suggests the next free letter (`<slug>-pi-a`, `-b`, `-c`, …) based on what's already on the tailnet; blank accepts the suggestion.
-   - **Pre-auth key** — mint one in the Tailscale admin console with `Tags = tag:pi-<slug>`.
+   - **School LAN CIDRs** — if another Pi is already enrolled in this district, its advertised routes auto-populate and you can accept them with a keystroke. Otherwise type the CIDR, e.g. `10.42.0.0/24`.
+   - **Hostname** — auto-suggests the next free letter (`<slug>-pi-a`, `-b`, `-c`, …); blank accepts the suggestion.
+   - **Auth key** — minted automatically via `dcs-mint-key` using your OAuth creds. No paste needed.
 5. The TUI writes the enrollment JSON, kicks `first-boot.service`, verifies the tag, and reboots.
 6. **Power off**, ship it. At the school the Pi boots, picks up the LAN, and re-advertises the CIDR. Routes auto-approve via ACL.
 
-**Without OAuth:** setup still works — the TUI just falls through to free-text for CIDRs and serial-based default for hostname. OAuth makes redundant-Pi provisioning faster; it isn't a hard dependency.
+**Prerequisite in Tailscale ACL:** `tag:pi-<slug>` must be declared in `tagOwners` (and ideally `autoApprovers` for the CIDR range) before the first Pi in a district enrolls, otherwise `dcs-mint-key` gets rejected.
+
+**Pre-baking OAuth creds:** if you build a custom image, set `DCS_TS_OAUTH_CLIENT_ID` / `DCS_TS_OAUTH_CLIENT_SECRET` before running `install.sh` (use `sudo -E`) and the TUI skips the OAuth prompt. For a one-off bypass with an already-minted key, export `DCS_AUTHKEY=tskey-auth-…` — the TUI uses it directly and skips both the OAuth prompt and the mint call.
 
 ## SSH access post-install
 

@@ -35,18 +35,18 @@ In the Tailscale admin console: create a tag-scoped pre-auth key for the distric
 3. **Clone and install:**
    ```
    git clone https://github.com/Subterra-Technologies/dcs-pi-image /tmp/dcs
-   # Optional: auto-populate CIDRs + hostname suggestions via Tailscale API
-   export DCS_TS_OAUTH_CLIENT_ID=<id>
-   export DCS_TS_OAUTH_CLIENT_SECRET=<secret>
-   sudo -E bash /tmp/dcs/install.sh
+   sudo bash /tmp/dcs/install.sh
    ```
-   The installer adds Tailscale + Charm apt repos, installs `tailscale`, `gum`, and `jq`, creates the `dcs` user, drops the DCS binaries + systemd units, persists any OAuth creds to `/etc/dcs.conf`, disables root login, and launches `dcs-setup`.
-4. **Answer four TUI prompts:**
+   The installer adds Tailscale + Charm apt repos, installs `tailscale`, `gum`, and `jq`, creates the `dcs` user, drops the DCS binaries + systemd units, disables root login, and launches `dcs-setup`. (Pre-bake OAuth creds by exporting `DCS_TS_OAUTH_CLIENT_ID` / `DCS_TS_OAUTH_CLIENT_SECRET` and running with `sudo -E` to skip the TUI's OAuth prompt — optional.)
+4. **Answer the TUI prompts:**
+   - **OAuth client** (first Pi on this image only) — client ID + secret from https://login.tailscale.com/admin/settings/oauth with scopes `devices:read` + `auth_keys:write`. Validated against the token endpoint before persisting to `/etc/dcs.conf`.
    - **District slug** (e.g. `oakridge`).
-   - **School LAN CIDRs** — if another Pi is already enrolled in this district, its routes auto-populate as defaults (just press ✓); otherwise type the CIDR, e.g. `10.42.0.0/24`. This prevents drift across redundant Pi pairs.
-   - **Hostname** — auto-suggests the next free letter (`<slug>-pi-a`, `-b`, …) based on existing `tag:pi-<slug>` hostnames on the tailnet. Blank accepts the suggestion.
-   - **Tailscale authkey** — paste one scoped to `tag:pi-<slug>`.
+   - **School LAN CIDRs** — if another Pi is already enrolled in this district, its routes auto-populate as defaults (just press ✓); otherwise type the CIDR, e.g. `10.42.0.0/24`.
+   - **Hostname** — auto-suggests the next free letter (`<slug>-pi-a`, `-b`, …) based on existing `tag:pi-<slug>` hostnames. Blank accepts.
+   - **Auth key** — minted automatically via `dcs-mint-key` (one-hour, tag-scoped to `tag:pi-<slug>`). Falls back to manual paste if minting fails (e.g. the tag isn't declared in ACL `tagOwners` yet).
 5. The TUI writes `/boot/firmware/dcs-enroll.json`, kicks `first-boot.service`, verifies the tag, and reboots.
+
+   **ACL prerequisite.** Before enrolling the first Pi of a new district, declare `tag:pi-<slug>` in `tagOwners` and list its CIDR range under `autoApprovers` in the tailnet policy. Otherwise auto-mint returns "API rejected request (check auth_keys:write scope and tag owners)".
 
 ```
 sudo poweroff                     # ship it
