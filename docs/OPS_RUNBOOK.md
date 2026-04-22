@@ -35,14 +35,17 @@ In the Tailscale admin console: create a tag-scoped pre-auth key for the distric
 3. **Clone and install:**
    ```
    git clone https://github.com/Subterra-Technologies/dcs-pi-image /tmp/dcs
-   sudo bash /tmp/dcs/install.sh
+   # Optional: auto-populate CIDRs + hostname suggestions via Tailscale API
+   export DCS_TS_OAUTH_CLIENT_ID=<id>
+   export DCS_TS_OAUTH_CLIENT_SECRET=<secret>
+   sudo -E bash /tmp/dcs/install.sh
    ```
-   The installer adds Tailscale + Charm apt repos, installs `tailscale`, `gum`, and `jq`, creates the `dcs` user, drops the DCS binaries + systemd units, disables root login, and launches `dcs-setup`.
+   The installer adds Tailscale + Charm apt repos, installs `tailscale`, `gum`, and `jq`, creates the `dcs` user, drops the DCS binaries + systemd units, persists any OAuth creds to `/etc/dcs.conf`, disables root login, and launches `dcs-setup`.
 4. **Answer four TUI prompts:**
-   - District slug (e.g. `oakridge`)
-   - School LAN CIDR (e.g. `10.42.0.0/24`) — ask district IT; this is what gets advertised
-   - Hostname (blank = auto `<slug>-pi-<serial8>`)
-   - Paste the Tailscale authkey
+   - **District slug** (e.g. `oakridge`).
+   - **School LAN CIDRs** — if another Pi is already enrolled in this district, its routes auto-populate as defaults (just press ✓); otherwise type the CIDR, e.g. `10.42.0.0/24`. This prevents drift across redundant Pi pairs.
+   - **Hostname** — auto-suggests the next free letter (`<slug>-pi-a`, `-b`, …) based on existing `tag:pi-<slug>` hostnames on the tailnet. Blank accepts the suggestion.
+   - **Tailscale authkey** — paste one scoped to `tag:pi-<slug>`.
 5. The TUI writes `/boot/firmware/dcs-enroll.json`, kicks `first-boot.service`, verifies the tag, and reboots.
 
 ```

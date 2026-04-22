@@ -27,16 +27,21 @@ Each Pi ships to a school with DCS installed. On first boot after enrollment it 
 3. **Clone and run the installer:**
    ```
    git clone https://github.com/Subterra-Technologies/dcs-pi-image /tmp/dcs
-   sudo bash /tmp/dcs/install.sh
+   # Optional: auto-populate CIDRs + hostname suggestions via the Tailscale API
+   export DCS_TS_OAUTH_CLIENT_ID=<id>
+   export DCS_TS_OAUTH_CLIENT_SECRET=<secret>
+   sudo -E bash /tmp/dcs/install.sh
    ```
-   The installer pulls `tailscale`, `gum`, and `jq`, creates the `dcs` user, installs the DCS binaries + systemd units, and launches `dcs-setup`.
+   The installer pulls `tailscale`, `gum`, and `jq`, creates the `dcs` user, installs the DCS binaries + systemd units, persists any OAuth creds to `/etc/dcs.conf`, and launches `dcs-setup`.
 4. **Answer the TUI prompts:**
    - **District slug** — e.g. `oakridge`
-   - **School LAN CIDR** — e.g. `10.42.0.0/24` (ask district IT; this gets advertised as a Tailscale subnet route)
-   - **Hostname** — blank = auto `<district>-pi-<short-serial>`
-   - **Pre-auth key** — mint one in the Tailscale admin console with `Tags = tag:pi-<slug>`
+   - **School LAN CIDRs** — if another Pi is already enrolled in this district, its advertised routes auto-populate and you can accept them with a keystroke (prevents drift across redundant Pi pairs). Otherwise type the CIDR, e.g. `10.42.0.0/24`.
+   - **Hostname** — auto-suggests the next free letter (`<slug>-pi-a`, `-b`, `-c`, …) based on what's already on the tailnet; blank accepts the suggestion.
+   - **Pre-auth key** — mint one in the Tailscale admin console with `Tags = tag:pi-<slug>`.
 5. The TUI writes the enrollment JSON, kicks `first-boot.service`, verifies the tag, and reboots.
 6. **Power off**, ship it. At the school the Pi boots, picks up the LAN, and re-advertises the CIDR. Routes auto-approve via ACL.
+
+**Without OAuth:** setup still works — the TUI just falls through to free-text for CIDRs and serial-based default for hostname. OAuth makes redundant-Pi provisioning faster; it isn't a hard dependency.
 
 ## SSH access post-install
 
@@ -92,7 +97,7 @@ Artifacts land in `./deploy/*.img.xz`. Most deployments don't need this — the 
 | Path | Purpose |
 |---|---|
 | `install.sh`                    | One-shot installer — run on a fresh Pi OS Lite. |
-| `rootfs/usr/local/sbin/dcs-*`   | Runtime tools (`dcs`, `dcs-setup`, `dcs-enroll`, `dcs-heartbeat`). |
+| `rootfs/usr/local/sbin/dcs-*`   | Runtime tools (`dcs`, `dcs-setup`, `dcs-enroll`, `dcs-heartbeat`, `dcs-query`, `dcs-districts`, `dcs-mint-key`). |
 | `rootfs/etc/systemd/system/`    | `first-boot.service`, `dcs-heartbeat.{service,timer}`. |
 | `image/`                        | pi-gen build driver + `stage-dcs` (advanced, golden-image path). |
 | `docs/OPS_RUNBOOK.md`           | Architecture, onboarding, troubleshooting, verification. |
