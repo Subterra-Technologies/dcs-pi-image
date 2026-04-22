@@ -18,6 +18,7 @@ fi
 
 ENROLL_CONFIG=/boot/firmware/dcs-enroll.json
 STATE_DIR=/var/lib/dcs
+DCS_CONF="${DCS_CONF:-/etc/dcs.conf}"
 
 # Palette
 C_BRAND=99      # purple
@@ -54,6 +55,69 @@ slugify() {
     printf '%s' "$s"
 }
 
+# Round-trip the OAuth client_credentials flow to confirm the creds currently
+# loaded in the env are valid. Returns 0 if Tailscale returns an access_token.
+test_oauth_creds() {
+    local token
+    token=$(curl -sSf -X POST https://api.tailscale.com/api/v2/oauth/token \
+        -d "client_id=${DCS_TS_OAUTH_CLIENT_ID:-}" \
+        -d "client_secret=${DCS_TS_OAUTH_CLIENT_SECRET:-}" \
+        -d "grant_type=client_credentials" 2>/dev/null \
+        | jq -r '.access_token // empty' || true)
+    [[ -n "${token}" ]]
+}
+
+# Make sure ${DCS_CONF} has working OAuth client credentials. If it doesn't,
+# walk the operator through entering them in the TUI and persist them. We
+# validate against Tailscale's token endpoint before writing so a typo is
+# caught immediately, not deep in the enrollment flow.
+ensure_oauth_creds() {
+    if [[ -f "${DCS_CONF}" ]]; then
+        # shellcheck disable=SC1090
+        . "${DCS_CONF}"
+    fi
+    if [[ -n "${DCS_TS_OAUTH_CLIENT_ID:-}" && -n "${DCS_TS_OAUTH_CLIENT_SECRET:-}" ]]; then
+        if test_oauth_creds; then
+            return 0
+        fi
+        warn "OAuth creds in ${DCS_CONF} are invalid — let's re-enter them."
+    fi
+
+    section "Tailscale OAuth client (one-time)"
+    muted "Mint at: https://login.tailscale.com/admin/settings/oauth"
+    muted "Scopes: devices:read + auth_keys:write"
+    muted "Client secret starts with 'tskey-client-' (not 'tskey-auth-')."
+    muted "Stored in ${DCS_CONF} (0600) so future Pis on this image skip this step."
+
+    while true; do
+        DCS_TS_OAUTH_CLIENT_ID=$(gum input --prompt "client id › " \
+            --placeholder "short string, no tskey- prefix")
+        if [[ -z "${DCS_TS_OAUTH_CLIENT_ID}" ]]; then
+            err "client id required"
+            continue
+        fi
+        DCS_TS_OAUTH_CLIENT_SECRET=$(gum input --password --prompt "client secret › ")
+        if [[ -z "${DCS_TS_OAUTH_CLIENT_SECRET}" ]]; then
+            err "client secret required"
+            continue
+        fi
+        if test_oauth_creds; then
+            ok "OAuth creds validated"
+            umask 077
+            cat > "${DCS_CONF}" <<EOF
+# Tailscale API creds. Scopes: devices:read, auth_keys:write.
+DCS_TS_OAUTH_CLIENT_ID=${DCS_TS_OAUTH_CLIENT_ID}
+DCS_TS_OAUTH_CLIENT_SECRET=${DCS_TS_OAUTH_CLIENT_SECRET}
+DCS_TS_TAILNET=${DCS_TS_TAILNET:--}
+EOF
+            chmod 0600 "${DCS_CONF}"
+            export DCS_TS_OAUTH_CLIENT_ID DCS_TS_OAUTH_CLIENT_SECRET
+            return 0
+        fi
+        err "Tailscale rejected those creds. Check the OAuth client, try again."
+    done
+}
+
 header \
     "◆ SCHOOL SIDE ◆" \
     "" \
@@ -67,6 +131,14 @@ if [[ -f "${STATE_DIR}/enrolled" ]]; then
     tailscale logout 2>/dev/null || true
     rm -f "${STATE_DIR}/enrolled" "${STATE_DIR}/enrollment.json"
     ok "Previous state cleared."
+fi
+
+# Collect OAuth client creds up-front so the District/CIDR/Hostname sections
+# can lean on dcs-query for autosuggestions, and so we can mint the auth key
+# automatically at the end instead of asking the operator to paste one.
+# Skippable via DCS_AUTHKEY for air-gapped / manual-paste workflows.
+if [[ -z "${DCS_AUTHKEY:-}" ]]; then
+    ensure_oauth_creds
 fi
 
 section "District"
@@ -156,10 +228,32 @@ fi
 HOSTNAME_HINT=$(gum input --prompt "› " --placeholder "${placeholder}")
 [[ -z "${HOSTNAME_HINT}" && -n "${SUGGESTED_HOSTNAME}" ]] && HOSTNAME_HINT="${SUGGESTED_HOSTNAME}"
 
-section "Tailscale auth key"
-muted "Must be tag-scoped for this district (e.g. tag:pi-${DISTRICT})."
-AUTHKEY=$(gum input --password --prompt "› ")
-[[ -n "${AUTHKEY}" ]] || { err "authkey required"; exit 1; }
+section "Auth key"
+if [[ -n "${DCS_AUTHKEY:-}" ]]; then
+    AUTHKEY="${DCS_AUTHKEY}"
+    muted "using auth key from \$DCS_AUTHKEY"
+else
+    muted "Minting a one-hour tag-scoped key for tag:pi-${DISTRICT}…"
+    MINT_RC=0
+    MINT_OUT=$(dcs-mint-key "pi-${DISTRICT}" 2>&1) || MINT_RC=$?
+    if [[ "${MINT_RC}" -eq 0 && "${MINT_OUT}" == tskey-auth-* ]]; then
+        AUTHKEY="${MINT_OUT}"
+        ok "auth key minted"
+    else
+        err "auto-mint failed:"
+        printf '  %s\n' "${MINT_OUT}"
+        muted "Common causes:"
+        muted "  • tag:pi-${DISTRICT} not declared in ACL tagOwners / autoApprovers"
+        muted "  • OAuth client missing the auth_keys:write scope"
+        if gum confirm "Paste a pre-minted auth key instead?"; then
+            AUTHKEY=$(gum input --password --prompt "› ")
+            [[ -n "${AUTHKEY}" ]] || { err "authkey required"; exit 1; }
+        else
+            err "aborted"
+            exit 1
+        fi
+    fi
+fi
 
 # Summary
 ROUTES_DISPLAY=$(printf '%s, ' "${CIDRS[@]}"); ROUTES_DISPLAY=${ROUTES_DISPLAY%, }
