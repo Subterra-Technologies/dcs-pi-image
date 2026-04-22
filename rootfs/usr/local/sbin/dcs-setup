@@ -128,7 +128,11 @@ section "Hostname"
 # Falls back to serial-based default if API unavailable or no prior Pi.
 SUGGESTED_HOSTNAME=""
 if command -v dcs-query >/dev/null 2>&1; then
-    letters=$(dcs-query hostnames "tag:pi-${DISTRICT}" 2>/dev/null \
+    # `|| true` so a dcs-query failure (no /etc/dcs.conf, bad OAuth, offline)
+    # falls back to serial-based hostname instead of killing the script under
+    # `set -e` + `pipefail`.
+    hostnames=$(dcs-query hostnames "tag:pi-${DISTRICT}" 2>/dev/null || true)
+    letters=$(printf '%s\n' "${hostnames}" \
         | sed -nE "s/^${DISTRICT}-pi-([a-z])$/\1/p" \
         | sort -u)
     if [[ -n "${letters}" ]]; then
@@ -136,7 +140,7 @@ if command -v dcs-query >/dev/null 2>&1; then
         next=$(printf '%s' "${last}" | tr 'a-y' 'b-z')
         [[ "${next}" == "${last}" ]] && next=z
         SUGGESTED_HOSTNAME="${DISTRICT}-pi-${next}"
-    elif dcs-query hostnames "tag:pi-${DISTRICT}" 2>/dev/null | grep -q .; then
+    elif [[ -n "${hostnames}" ]]; then
         # Existing Pi(s) but none with a letter suffix — start the convention.
         SUGGESTED_HOSTNAME="${DISTRICT}-pi-b"
     fi
