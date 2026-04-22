@@ -19,32 +19,41 @@ Control plane is **Tailscale SaaS**. No self-hosted coordinator.
 
 ## 2. Onboarding a new district
 
-### 2a. Provision the Pi — ◆ SCHOOL SIDE ◆ (office, TUI flow — primary path)
+### 2a. Provision the Pi — ◆ SCHOOL SIDE ◆ (office, clone-and-run flow — primary path)
+
+No golden image required. Flash plain Raspberry Pi OS Lite, SSH in, clone the repo, run the installer.
 
 In the Tailscale admin console: create a tag-scoped pre-auth key for the district's `tag:pi-<slug>`. Copy the `tskey-auth-...` string.
 
-Flash the image and boot the Pi on the office LAN:
+**Flash and first boot (office):**
 
-```
-# ops laptop
-ssh dcs@dcs-pi.local          # ops SSH key is baked into the image
-sudo dcs-setup                  # TUI
-```
-
-Answer four prompts:
-
-- District slug (e.g. `oakridge`)
-- School LAN CIDR (e.g. `10.42.0.0/24`) — ask district IT; this is what gets advertised
-- Hostname (blank = auto `<slug>-pi-<serial8>`)
-- Paste the Tailscale authkey
-
-The TUI writes `/boot/firmware/dcs-enroll.json` with explicit `advertise_routes`, kicks `first-boot.service`, which joins the tailnet and reboots. Verify in the Tailscale admin panel that the node is online with the expected tag and advertised routes.
+1. **Flash** Raspberry Pi OS Lite (64-bit) to NVMe/SD with **rpi-imager**. Advanced options: set hostname, username + password, enable SSH.
+2. **Boot** the Pi on the office LAN with PoE+. SSH in with your user/password:
+   ```
+   ssh <user>@<pi>.local
+   ```
+3. **Clone and install:**
+   ```
+   git clone https://github.com/Subterra-Technologies/dcs-pi-image /tmp/dcs
+   sudo bash /tmp/dcs/install.sh
+   ```
+   The installer adds Tailscale + Charm apt repos, installs `tailscale`, `gum`, and `jq`, creates the `dcs` user, drops the DCS binaries + systemd units, disables root login, and launches `dcs-setup`.
+4. **Answer four TUI prompts:**
+   - District slug (e.g. `oakridge`)
+   - School LAN CIDR (e.g. `10.42.0.0/24`) — ask district IT; this is what gets advertised
+   - Hostname (blank = auto `<slug>-pi-<serial8>`)
+   - Paste the Tailscale authkey
+5. The TUI writes `/boot/firmware/dcs-enroll.json`, kicks `first-boot.service`, verifies the tag, and reboots.
 
 ```
 sudo poweroff                     # ship it
 ```
 
 At the school, the Pi boots, picks up the school LAN on its primary interface, and re-advertises the pre-declared school CIDR. Routes auto-approve via tailnet ACL `autoApprovers` (RFC1918 for `tag:pi-*`).
+
+**SSH note.** The installer disables root login but **leaves password authentication enabled** so the user/password you set via rpi-imager keeps working as a break-glass fallback. Day-to-day access should go through Tailscale SSH (`tailscale ssh dcs@<hostname>`), which bypasses sshd entirely.
+
+**Golden-image alternative.** If you want a fully pre-baked `.img.xz` for high-volume deploys, the `image/` directory still has the pi-gen driver (`./image/build.sh`). Most fleets don't need it — the clone-and-run flow above is easier to iterate on.
 
 ### 2b. Fallback: unattended JSON seeding
 

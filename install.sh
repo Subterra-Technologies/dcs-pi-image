@@ -1,27 +1,30 @@
 #!/usr/bin/env bash
-# DCS Pi bootstrap — turn a fresh Raspberry Pi OS install into a DCS Pi.
+# DCS Pi bootstrap — turn a fresh Raspberry Pi OS Lite into a DCS Pi.
 #
-# Fresh-Pi flow:
-#   1. rpi-imager → Raspberry Pi OS Lite, Advanced options: set SSH pubkey, enable SSH
-#   2. ssh <user>@<pi>.local
-#   3. curl -fsSL http://<lan>:8000/install.sh | DCS_SRC=http://<lan>:8000 sudo -E bash
+# Dead-simple flow:
+#   1. Flash Raspberry Pi OS Lite (rpi-imager → Advanced options: set username,
+#      password, hostname, and enable SSH).
+#   2. Boot the Pi on the office LAN with PoE+. SSH in with your user/password.
+#   3. Clone this repo and run the installer:
+#        git clone https://github.com/Subterra-Technologies/dcs-pi-image /tmp/dcs
+#        sudo bash /tmp/dcs/install.sh
+#      Or, with OAuth auto-mint enabled:
+#        export DCS_TS_OAUTH_CLIENT_ID=...
+#        export DCS_TS_OAUTH_CLIENT_SECRET=...
+#        sudo -E bash /tmp/dcs/install.sh
 #
 # After install, dcs-setup TUI launches automatically. Answer the prompts and
 # the Pi joins the tailnet.
 #
-# DCS_SRC can be either an HTTP(S) URL (LAN server) or a local repo checkout.
+# Advanced: DCS_SRC can point at an HTTP(S) URL (LAN mirror) or an alternate
+# local checkout. By default it's the directory this script lives in.
 
 set -euo pipefail
 
-[[ $EUID -eq 0 ]] || { echo "run as root (use sudo -E)"; exit 1; }
+[[ $EUID -eq 0 ]] || { echo "run as root (sudo -E bash install.sh)"; exit 1; }
 
-DCS_SRC="${DCS_SRC:-}"
-[[ -n "${DCS_SRC}" ]] || {
-    echo "DCS_SRC is required."
-    echo "  URL form:   DCS_SRC=http://<lan>:8000 sudo -E bash install.sh"
-    echo "  Local form: DCS_SRC=/path/to/dcs-pi-image sudo -E bash install.sh"
-    exit 1
-}
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DCS_SRC="${DCS_SRC:-${HERE}}"
 
 fetch() {
     # fetch <repo-relative-path> <dest-absolute-path>
@@ -62,7 +65,6 @@ echo "==> [3/7] ensure 'dcs' user"
 if ! id -u dcs >/dev/null 2>&1; then
     useradd -m -s /bin/bash -G sudo dcs
     echo "  created user dcs"
-    # Copy SSH key from whoever invoked sudo, so ops can immediately ssh dcs@...
     if [[ -n "${SUDO_USER:-}" ]] && [[ -f "/home/${SUDO_USER}/.ssh/authorized_keys" ]]; then
         install -d -m 0700 -o dcs -g dcs /home/dcs/.ssh
         install -m 0600 -o dcs -g dcs "/home/${SUDO_USER}/.ssh/authorized_keys" \
@@ -71,12 +73,11 @@ if ! id -u dcs >/dev/null 2>&1; then
     fi
 fi
 
-echo "==> [4/7] harden sshd (key-only auth)"
-sed -i \
-    -e 's/^#\?PermitRootLogin.*/PermitRootLogin no/' \
-    -e 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' \
-    -e 's/^#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' \
-    /etc/ssh/sshd_config
+echo "==> [4/7] harden sshd (disable root login; password auth stays on)"
+# Note: password auth is deliberately left enabled so operators can SSH in with
+# the user/password they set via rpi-imager. Tailscale SSH is the primary
+# access path post-enrollment; the LAN password path is a break-glass fallback.
+sed -i -e 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
 systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
 
 echo "==> [5/7] install dcs scripts"
@@ -84,6 +85,21 @@ for script in dcs-enroll dcs-heartbeat dcs-setup dcs; do
     fetch "rootfs/usr/local/sbin/${script}" "/usr/local/sbin/${script}"
     chmod 0755 "/usr/local/sbin/${script}"
 done
+
+# Optional: persist OAuth creds when provided at install time. The Pi-side
+# dcs-setup doesn't use them today, but the file is the same shape the VM
+# side reads, so it's one less thing to configure later.
+if [[ -n "${DCS_TS_OAUTH_CLIENT_ID:-}" && -n "${DCS_TS_OAUTH_CLIENT_SECRET:-}" ]]; then
+    umask 077
+    cat > /etc/dcs.conf <<EOF
+# Tailscale API creds. Scopes: devices:read, auth_keys:write.
+DCS_TS_OAUTH_CLIENT_ID=${DCS_TS_OAUTH_CLIENT_ID}
+DCS_TS_OAUTH_CLIENT_SECRET=${DCS_TS_OAUTH_CLIENT_SECRET}
+DCS_TS_TAILNET=${DCS_TS_TAILNET:--}
+EOF
+    chmod 0600 /etc/dcs.conf
+    echo "    wrote /etc/dcs.conf"
+fi
 
 echo "==> [6/7] install systemd units"
 for unit in first-boot.service dcs-heartbeat.service dcs-heartbeat.timer; do
