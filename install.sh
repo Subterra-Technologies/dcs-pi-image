@@ -81,7 +81,7 @@ sed -i -e 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
 systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
 
 echo "==> [5/7] install dcs scripts"
-for script in dcs-enroll dcs-heartbeat dcs-setup dcs; do
+for script in dcs-enroll dcs-heartbeat dcs-setup dcs dcs-districts dcs-mint-key dcs-query; do
     fetch "rootfs/usr/local/sbin/${script}" "/usr/local/sbin/${script}"
     chmod 0755 "/usr/local/sbin/${script}"
 done

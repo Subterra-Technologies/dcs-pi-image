@@ -79,24 +79,43 @@ if [[ "${DISTRICT}" != "${DISTRICT_RAW}" ]]; then
 fi
 
 section "School LAN subnets"
-muted "Enter each CIDR the Pi should advertise. Leave blank to finish."
-muted "If you skip entirely, auto-detect uses the primary subnet at first boot."
+
+# If this district already has a Pi on the tailnet, inherit its advertised
+# routes as defaults so redundant Pis don't drift on CIDR advertisement.
+EXISTING_CIDRS=()
+if command -v dcs-query >/dev/null 2>&1; then
+    mapfile -t EXISTING_CIDRS < <(dcs-query cidrs "${DISTRICT}" 2>/dev/null | awk 'NF')
+fi
+
 CIDRS=()
-while true; do
-    if [[ ${#CIDRS[@]} -eq 0 ]]; then
-        placeholder="e.g. 10.42.0.0/24  (blank → auto-detect at boot)"
-    else
-        placeholder="another CIDR, or blank to finish (${#CIDRS[@]} added)"
+if [[ ${#EXISTING_CIDRS[@]} -gt 0 ]]; then
+    ok "Found existing Pi(s) in this district advertising:"
+    for c in "${EXISTING_CIDRS[@]}"; do printf '    • %s\n' "${c}"; done
+    if gum confirm "Use the same CIDRs for this Pi?"; then
+        CIDRS=("${EXISTING_CIDRS[@]}")
     fi
-    CIDR=$(gum input --prompt "› " --placeholder "${placeholder}")
-    [[ -z "${CIDR}" ]] && break
-    if ! valid_cidr "${CIDR}"; then
-        err "invalid CIDR: ${CIDR}"
-        continue
-    fi
-    CIDRS+=("${CIDR}")
-    ok "added ${CIDR}"
-done
+fi
+
+if [[ ${#CIDRS[@]} -eq 0 ]]; then
+    muted "Enter each CIDR the Pi should advertise. Leave blank to finish."
+    muted "If you skip entirely, auto-detect uses the primary subnet at first boot."
+    while true; do
+        if [[ ${#CIDRS[@]} -eq 0 ]]; then
+            placeholder="e.g. 10.42.0.0/24  (blank → auto-detect at boot)"
+        else
+            placeholder="another CIDR, or blank to finish (${#CIDRS[@]} added)"
+        fi
+        CIDR=$(gum input --prompt "› " --placeholder "${placeholder}")
+        [[ -z "${CIDR}" ]] && break
+        if ! valid_cidr "${CIDR}"; then
+            err "invalid CIDR: ${CIDR}"
+            continue
+        fi
+        CIDRS+=("${CIDR}")
+        ok "added ${CIDR}"
+    done
+fi
+
 if [[ ${#CIDRS[@]} -eq 0 ]]; then
     warn "No CIDR entered — will auto-detect the primary subnet at first boot."
     warn "If you're shipping this Pi office → school, cancel and enter the school's CIDR now."
@@ -104,8 +123,34 @@ if [[ ${#CIDRS[@]} -eq 0 ]]; then
 fi
 
 section "Hostname"
-muted "Blank → auto: <district>-pi-<serial8>"
-HOSTNAME_HINT=$(gum input --prompt "› " --placeholder "e.g. oakridge-pi-main")
+
+# Suggest the next letter by inspecting existing <slug>-pi-<letter> hostnames.
+# Falls back to serial-based default if API unavailable or no prior Pi.
+SUGGESTED_HOSTNAME=""
+if command -v dcs-query >/dev/null 2>&1; then
+    letters=$(dcs-query hostnames "tag:pi-${DISTRICT}" 2>/dev/null \
+        | sed -nE "s/^${DISTRICT}-pi-([a-z])$/\1/p" \
+        | sort -u)
+    if [[ -n "${letters}" ]]; then
+        last=$(printf '%s\n' "${letters}" | tail -1)
+        next=$(printf '%s' "${last}" | tr 'a-y' 'b-z')
+        [[ "${next}" == "${last}" ]] && next=z
+        SUGGESTED_HOSTNAME="${DISTRICT}-pi-${next}"
+    elif dcs-query hostnames "tag:pi-${DISTRICT}" 2>/dev/null | grep -q .; then
+        # Existing Pi(s) but none with a letter suffix — start the convention.
+        SUGGESTED_HOSTNAME="${DISTRICT}-pi-b"
+    fi
+fi
+
+if [[ -n "${SUGGESTED_HOSTNAME}" ]]; then
+    muted "Suggested: ${SUGGESTED_HOSTNAME}  (based on existing Pis in this district)"
+    placeholder="blank → ${SUGGESTED_HOSTNAME}"
+else
+    muted "Blank → auto: <district>-pi-<serial8>"
+    placeholder="e.g. oakridge-pi-a"
+fi
+HOSTNAME_HINT=$(gum input --prompt "› " --placeholder "${placeholder}")
+[[ -z "${HOSTNAME_HINT}" && -n "${SUGGESTED_HOSTNAME}" ]] && HOSTNAME_HINT="${SUGGESTED_HOSTNAME}"
 
 section "Tailscale auth key"
 muted "Must be tag-scoped for this district (e.g. tag:pi-${DISTRICT})."
