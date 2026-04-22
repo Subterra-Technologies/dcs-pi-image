@@ -63,6 +63,8 @@ Fields: `authkey` and `district` required. `advertise_routes` optional (the enro
 
 ### 2c. Stand up Zabbix VMs for the district — ◆ MONITORING SIDE ◆ (TUI flow)
 
+**One-time per tailnet (enables the district picker):** Admin console → Settings → OAuth clients → Generate. Scope: `devices:read`. Save the client ID + secret in the team password manager. Without this, the TUI still works — it just asks you to type the district slug by hand.
+
 For each Zabbix VM:
 
 - Create the VM on Proxmox. No public IP needed; only outbound internet.
@@ -70,12 +72,15 @@ For each Zabbix VM:
 - On the Zabbix VM:
   ```
   git clone https://github.com/Subterra-Technologies/detel-hub /tmp/hub
-  sudo bash /tmp/hub/zabbix-vm/install.sh
+  # Optional: enable district picker in the TUI
+  export DETEL_TS_OAUTH_CLIENT_ID=<client-id>
+  export DETEL_TS_OAUTH_CLIENT_SECRET=<client-secret>
+  sudo -E bash /tmp/hub/zabbix-vm/install.sh
   ```
-  The installer ensures `tailscale`, `gum`, and `jq` are present, drops `detel-setup` + `detel` into `/usr/local/sbin`, then launches the TUI. Answer three prompts:
-  - District slug (e.g. `oakridge`)
-  - Hostname (blank = auto `zabbix-<slug>-a`; use `-b`, `-c` for additional VMs)
-  - Paste the Tailscale authkey
+  The installer ensures `tailscale`, `gum`, and `jq` are present, drops `detel-setup`, `detel`, and `detel-districts` into `/usr/local/sbin`, persists the OAuth creds to `/etc/detel.conf` (chmod 0600), then launches the TUI. Answer three prompts:
+  - **District** — picker of existing Pi-tagged districts (if OAuth is configured) or free-text slug
+  - **Hostname** — blank = auto `zabbix-<slug>-a`; use `-b`, `-c` for additional VMs
+  - **Authkey** — paste the Tailscale pre-auth key
   The TUI runs `tailscale up --authkey … --ssh --accept-routes --accept-dns=false`, validates the assigned tag, and persists `/var/lib/detel/enrollment.json`.
 - Verify in the Tailscale admin panel that the Zabbix node is online with its district tag and that the district's Pi routes show as reachable.
 
@@ -87,7 +92,7 @@ sudo /tmp/hub/zabbix-vm/bootstrap.sh \
 ```
 Same effect, no prompts.
 
-After enrollment, the admin TUI is available as `sudo detel` (menu: status / logs / reconfigure / reset).
+After enrollment, the admin TUI is available as `sudo detel` (menu: status / districts / logs / reconfigure / reset). `sudo detel districts` prints the Pi fleet from the API for quick sanity-checks.
 
 ### 2d. Configure Zabbix hosts
 
