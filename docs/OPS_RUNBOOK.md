@@ -39,14 +39,14 @@ In the Tailscale admin console: create a tag-scoped pre-auth key for the distric
    ```
    The installer adds Tailscale + Charm apt repos, installs `tailscale`, `gum`, and `jq`, creates the `dcs` user, drops the DCS binaries + systemd units, disables root login, and launches `dcs-setup`. (Pre-bake OAuth creds by exporting `DCS_TS_OAUTH_CLIENT_ID` / `DCS_TS_OAUTH_CLIENT_SECRET` and running with `sudo -E` to skip the TUI's OAuth prompt — optional.)
 4. **Answer the TUI prompts:**
-   - **OAuth client** (first Pi on this image only) — client ID + secret from https://login.tailscale.com/admin/settings/oauth with scopes `devices:read` + `auth_keys:write`. Validated against the token endpoint before persisting to `/etc/dcs.conf`.
+   - **OAuth client** (first Pi on this image only) — client ID + secret from the Trust credentials page (https://login.tailscale.com/admin/settings/trust-credentials → OAuth clients → Generate) with scopes `devices:core` (Read) + `auth_keys` (Write, with every `tag:pi-*` you'll provision selected on the client). Validated against the token endpoint before persisting to `/etc/dcs.conf`.
    - **District slug** (e.g. `oakridge`).
    - **School LAN CIDRs** — if another Pi is already enrolled in this district, its routes auto-populate as defaults (just press ✓); otherwise type the CIDR, e.g. `10.42.0.0/24`.
    - **Hostname** — auto-suggests the next free letter (`<slug>-pi-a`, `-b`, …) based on existing `tag:pi-<slug>` hostnames. Blank accepts.
    - **Auth key** — minted automatically via `dcs-mint-key` (one-hour, tag-scoped to `tag:pi-<slug>`). Falls back to manual paste if minting fails (e.g. the tag isn't declared in ACL `tagOwners` yet).
 5. The TUI writes `/boot/firmware/dcs-enroll.json`, kicks `first-boot.service`, verifies the tag, and reboots.
 
-   **ACL prerequisite.** Before enrolling the first Pi of a new district, declare `tag:pi-<slug>` in `tagOwners` and list its CIDR range under `autoApprovers` in the tailnet policy. Otherwise auto-mint returns "API rejected request (check auth_keys:write scope and tag owners)".
+   **ACL prerequisite.** Before enrolling the first Pi of a new district, declare `tag:pi-<slug>` in `tagOwners` and list its CIDR range under `autoApprovers` in the tailnet policy — **and** add that tag to the OAuth client's `auth_keys` scope in Trust credentials. Otherwise auto-mint returns "API rejected request".
 
 ```
 sudo poweroff                     # ship it
@@ -75,11 +75,11 @@ Fields: `authkey` and `district` required. `advertise_routes` optional (the enro
 
 ### 2c. Stand up Zabbix VMs for the district — ◆ MONITORING SIDE ◆ (TUI flow)
 
-**One-time per tailnet (enables the easy path):** Admin console → Settings → OAuth clients → **Generate**. Grant it two scopes:
-- `devices:read` — lets the TUI show a live picker of existing Pi districts.
-- `auth_keys:write` — lets the TUI **auto-mint** the pre-auth key for each VM. The operator never touches the admin console per VM.
+**One-time per tailnet (enables the easy path):** Admin console → **Trust credentials** (https://login.tailscale.com/admin/settings/trust-credentials) → OAuth clients → **Generate**. Grant it two scopes:
+- `devices:core` with **Read** — lets the TUI show a live picker of existing Pi districts.
+- `auth_keys` with **Write** (select every `tag:pi-*` and `tag:zabbix-*` you'll provision) — lets the TUI **auto-mint** the pre-auth key for each VM. The operator never touches the admin console per VM.
 
-Save the client ID + secret in the team password manager. Without these scopes the TUI still works — it just asks the operator to paste a hand-minted key and/or type the slug.
+Save the client ID + secret (the secret starts with `tskey-client-`) in the team password manager. Without these scopes the TUI still works — it just asks the operator to paste a hand-minted key and/or type the slug.
 
 For each Zabbix VM:
 
@@ -92,9 +92,9 @@ For each Zabbix VM:
   sudo -E bash /tmp/hub/zabbix-vm/install.sh
   ```
   The installer ensures `tailscale`, `gum`, and `jq` are present, drops `dcs-setup`, `dcs`, `dcs-districts`, and `dcs-mint-key` into `/usr/local/sbin`, persists the OAuth creds to `/etc/dcs.conf` (chmod 0600), then launches the TUI. Answer two prompts:
-  - **District** — picker of live Pi-tagged districts (if `devices:read` is granted) or free-text slug.
+  - **District** — picker of live Pi-tagged districts (if `devices:core` Read is granted) or free-text slug.
   - **Hostname** — blank = auto `zabbix-<slug>-a`; use `-b`, `-c` for additional VMs.
-  The TUI then auto-mints a one-hour pre-auth key via `dcs-mint-key` (if `auth_keys:write` is granted), runs `tailscale up --authkey … --ssh --accept-routes --accept-dns=false`, validates the assigned tag, and persists `/var/lib/dcs/enrollment.json`. If auto-mint isn't available it falls back to prompting for a pasted key.
+  The TUI then auto-mints a one-hour pre-auth key via `dcs-mint-key` (if `auth_keys` Write is granted for this tag), runs `tailscale up --authkey … --ssh --accept-routes --accept-dns=false`, validates the assigned tag, and persists `/var/lib/dcs/enrollment.json`. If auto-mint isn't available it falls back to prompting for a pasted key.
 - Verify in the Tailscale admin panel that the Zabbix node is online with its district tag and that the district's Pi routes show as reachable.
 
 **Headless alternative (CI / scripted deploys):** skip the TUI and call `bootstrap.sh` with flags:

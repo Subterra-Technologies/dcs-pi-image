@@ -14,7 +14,7 @@
 #   0  success (even if zero matches — empty output is a valid answer)
 #   1  config missing or API failure (message on stderr)
 #
-# Scope required on the OAuth client: devices:read
+# Scope required on the OAuth client: devices:core (Read)
 
 set -euo pipefail
 

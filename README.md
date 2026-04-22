@@ -31,7 +31,7 @@ Each Pi ships to a school with DCS installed. On first boot after enrollment it 
    ```
    The installer pulls `tailscale`, `gum`, and `jq`, creates the `dcs` user, installs the DCS binaries + systemd units, and launches `dcs-setup`.
 4. **Answer the TUI prompts:**
-   - **OAuth client** (first Pi on this image only) — client ID + client secret from https://login.tailscale.com/admin/settings/oauth with scopes `devices:read` and `auth_keys:write`. Stored at `/etc/dcs.conf` and reused on subsequent setups.
+   - **OAuth client** (first Pi on this image only) — client ID + client secret from https://login.tailscale.com/admin/settings/trust-credentials → **OAuth clients** → Generate. Scopes: `devices:core` with **Read**, and `auth_keys` with **Write** (select every `tag:pi-*` you'll provision). Stored at `/etc/dcs.conf` and reused on subsequent setups.
    - **District slug** — e.g. `oakridge`
    - **School LAN CIDRs** — if another Pi is already enrolled in this district, its advertised routes auto-populate and you can accept them with a keystroke. Otherwise type the CIDR, e.g. `10.42.0.0/24`.
    - **Hostname** — auto-suggests the next free letter (`<slug>-pi-a`, `-b`, `-c`, …); blank accepts the suggestion.

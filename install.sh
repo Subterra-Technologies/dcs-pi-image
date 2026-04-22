@@ -94,7 +94,7 @@ done
 if [[ -n "${DCS_TS_OAUTH_CLIENT_ID:-}" && -n "${DCS_TS_OAUTH_CLIENT_SECRET:-}" ]]; then
     umask 077
     cat > /etc/dcs.conf <<EOF
-# Tailscale API creds. Scopes: devices:read, auth_keys:write.
+# Tailscale API creds. Scopes: devices:core:read, auth_keys (tag-scoped).
 DCS_TS_OAUTH_CLIENT_ID=${DCS_TS_OAUTH_CLIENT_ID}
 DCS_TS_OAUTH_CLIENT_SECRET=${DCS_TS_OAUTH_CLIENT_SECRET}
 DCS_TS_TAILNET=${DCS_TS_TAILNET:--}
