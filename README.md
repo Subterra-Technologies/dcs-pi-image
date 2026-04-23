@@ -31,15 +31,26 @@ Each Pi ships to a school with DCS installed. On first boot after enrollment it 
    ```
    The installer pulls `tailscale`, `gum`, and `jq`, creates the `dcs` user, installs the DCS binaries + systemd units, and launches `dcs-setup`.
 4. **Answer the TUI prompts:**
-   - **OAuth client** (first Pi on this image only) — client ID + client secret from https://login.tailscale.com/admin/settings/trust-credentials → **OAuth clients** → Generate. Scopes: `devices:core` with **Read**, and `auth_keys` with **Write** (select every `tag:pi-*` you'll provision). Stored at `/etc/dcs.conf` and reused on subsequent setups.
+   - **OAuth client** (first Pi on this image only) — client ID + client secret from https://login.tailscale.com/admin/settings/trust-credentials → **OAuth clients** → Generate. Scopes: `devices:core` with **Read**, and `auth_keys` with **Write** (select every `tag:pi-*` you'll provision — see gotcha below). The TUI validates the creds live against Tailscale's token endpoint and refuses to continue on failure, then stores them at `/etc/dcs.conf` (mode `0600`). Subsequent Pis on the same image skip this prompt entirely.
    - **District slug** — e.g. `oakridge`
    - **School LAN CIDRs** — if another Pi is already enrolled in this district, its advertised routes auto-populate and you can accept them with a keystroke. Otherwise type the CIDR, e.g. `10.42.0.0/24`.
+   - **ACL precheck** — before minting, the TUI reads the tailnet ACL and verifies `tag:pi-<slug>` is in `tagOwners` and every entered CIDR is in `autoApprovers`. On mismatch it prints a copy-pasteable HuJSON snippet and exits. The check is read-only by design — round-tripping the ACL through `jq` would strip comments, so you fix it by hand in the admin console.
    - **Hostname** — auto-suggests the next free letter (`<slug>-pi-a`, `-b`, `-c`, …); blank accepts the suggestion.
-   - **Auth key** — minted automatically via `dcs-mint-key` using your OAuth creds. No paste needed.
+   - **Auth key** — minted automatically via `dcs-mint-key` using your OAuth creds. No paste needed unless the mint fails, in which case the TUI surfaces Tailscale's actual error message and offers a paste fallback.
 5. The TUI writes the enrollment JSON, kicks `first-boot.service`, verifies the tag, and reboots.
 6. **Power off**, ship it. At the school the Pi boots, picks up the LAN, and re-advertises the CIDR. Routes auto-approve via ACL.
 
-**Prerequisite in Tailscale ACL:** `tag:pi-<slug>` must be declared in `tagOwners` (and ideally `autoApprovers` for the CIDR range) before the first Pi in a district enrolls, otherwise `dcs-mint-key` gets rejected.
+### OAuth client gotcha
+
+Even with the `all` scope, the `auth_keys` permission on a Tailscale OAuth client requires **per-tag selection at client-creation time**. If `tag:pi-<slug>` isn't in the client's selected tag list, every mint fails with:
+
+```
+requested tags are not owned by this OAuth client
+```
+
+Fix: edit the OAuth client at https://login.tailscale.com/admin/settings/trust-credentials and add the tag to the `auth_keys` scope row. The `devices:core` (Read) scope does not have this restriction — it applies tailnet-wide. The ACL precheck uses `policy_file:read` (included in `all`); if you scoped the client more tightly, the precheck will skip with a warning.
+
+**Prerequisite in Tailscale ACL:** `tag:pi-<slug>` must be declared in `tagOwners`, and the district's CIDR(s) must be in `autoApprovers` for `tag:pi-<slug>`, before the first Pi in a district enrolls. The ACL precheck will tell you exactly what's missing.
 
 **Pre-baking OAuth creds:** if you build a custom image, set `DCS_TS_OAUTH_CLIENT_ID` / `DCS_TS_OAUTH_CLIENT_SECRET` before running `install.sh` (use `sudo -E`) and the TUI skips the OAuth prompt. For a one-off bypass with an already-minted key, export `DCS_AUTHKEY=tskey-auth-…` — the TUI uses it directly and skips both the OAuth prompt and the mint call.
 
@@ -58,7 +69,7 @@ Root login is disabled (`PermitRootLogin no`).
 On any enrolled Pi:
 
 ```
-sudo dcs status       # enrollment state, routes, peers
+sudo dcs status       # enrollment state, routes, peers, installed version
 sudo dcs stats        # uptime, load, temp, Zabbix proxy
 sudo dcs logs         # pick a service, tail the journal
 sudo dcs routes       # view/edit advertised subnets
@@ -66,6 +77,17 @@ sudo dcs update       # pull latest dcs scripts + units from the repo
 sudo dcs reconfigure  # re-run setup (swap district or authkey)
 sudo dcs reset        # logout + wipe local state
 ```
+
+`dcs status` includes a **Version** line showing the short SHA of the currently installed `dcs-*` scripts + units (read from `/var/lib/dcs/installed-sha`).
+
+### Updating a deployed Pi
+
+`sudo dcs update` shallow-clones the repo into a tempdir, diffs against the installed SHA, shows the pending commit log, prompts to confirm, then reinstalls every script under `rootfs/usr/local/sbin/` and every unit under `rootfs/etc/systemd/system/`. It does **not** touch `/etc/dcs.conf`, the enrollment JSON, or the tailnet session — it's purely a code refresh. `systemctl daemon-reload` runs automatically and `dcs-heartbeat.timer` is restarted if active.
+
+- Pin a branch/tag/SHA with `DCS_REPO_REF=<ref> sudo -E dcs update` (default: `main`)
+- Override the source repo with `DCS_REPO_URL=...` (default: the upstream Subterra-Technologies repo)
+- `git` is installed automatically if missing — safe to run on a fresh Pi OS Lite that never had it
+- The new SHA is written to `/var/lib/dcs/installed-sha` so `dcs status` reflects it
 
 ## Fallback — unattended JSON seeding
 
@@ -103,6 +125,18 @@ Artifacts land in `./deploy/*.img.xz`. Most deployments don't need this — the 
 | `image/`                        | pi-gen build driver + `stage-dcs` (advanced, golden-image path). |
 | `docs/OPS_RUNBOOK.md`           | Architecture, onboarding, troubleshooting, verification. |
 | `tests/`                        | Integration tests — run with `python3 tests/test_enroll_integration.py`. |
+
+## Troubleshooting
+
+**Auto-mint fails with "requested tags are not owned by this OAuth client"** — the OAuth client needs `tag:pi-<slug>` selected on the `auth_keys` scope row. See the [OAuth client gotcha](#oauth-client-gotcha) above. Even `all` scope does not cover this.
+
+**Auto-mint fails with a different `.message`** — `dcs-mint-key` prints Tailscale's actual error body on any HTTP 4xx/5xx (instead of just the status code). Read the message; it usually points at a missing ACL `tagOwners` entry, an expired client secret, or a tailnet mismatch.
+
+**ACL precheck prints a HuJSON snippet and exits** — copy the snippet into the ACL at https://login.tailscale.com/admin/acls/file, save, re-run `sudo dcs-setup`. The precheck is read-only — it will not write the ACL for you (jq would destroy comments).
+
+**ACL precheck says "OAuth client likely lacks policy_file scope"** — the check is skipped and setup continues. If auto-mint then fails, verify `tagOwners` + `autoApprovers` manually in the admin console.
+
+**`dcs status` shows `Version` as blank** — `/var/lib/dcs/installed-sha` hasn't been written yet (pre-`update`-era install). Run `sudo dcs update` once; it will backfill the file after the first successful update.
 
 ## What NOT to commit
 
