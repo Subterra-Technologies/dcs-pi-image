@@ -26,10 +26,11 @@ Each Pi ships to a school with DCS installed. On first boot after enrollment it 
    ```
 3. **Clone and run the installer:**
    ```
+   sudo apt update && sudo apt install -y git
    git clone https://github.com/Subterra-Technologies/dcs-pi-image /tmp/dcs
    sudo bash /tmp/dcs/install.sh
    ```
-   The installer pulls `tailscale`, `gum`, and `jq`, creates the `dcs` user, installs the DCS binaries + systemd units, and launches `dcs-setup`.
+   (Raspberry Pi OS Lite doesn't ship with git — the first line is a no-op on images that already have it.) The installer pulls `tailscale`, `gum`, and `jq`, creates the `dcs` user, installs the DCS binaries + systemd units, and launches `dcs-setup`.
 4. **Answer the TUI prompts:**
    - **OAuth client** (first Pi on this image only) — client ID + client secret from https://login.tailscale.com/admin/settings/trust-credentials → **OAuth clients** → Generate. Scopes: `devices:core` with **Read**, and `auth_keys` with **Write** (select every `tag:pi-*` you'll provision — see gotcha below). The TUI validates the creds live against Tailscale's token endpoint and refuses to continue on failure, then stores them at `/etc/dcs.conf` (mode `0600`). Subsequent Pis on the same image skip this prompt entirely.
    - **District slug** — e.g. `oakridge`
