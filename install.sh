@@ -108,7 +108,10 @@ for unit in first-boot.service dcs-heartbeat.service dcs-heartbeat.timer; do
     fetch "rootfs/etc/systemd/system/${unit}" "/etc/systemd/system/${unit}"
 done
 systemctl daemon-reload
-systemctl enable tailscaled.service
+# --now so tailscaled is actually running for dcs-setup's API calls below,
+# not just enabled for the next boot. (first-boot.service stays enable-only
+# — it's triggered at boot and we don't want it racing the TUI.)
+systemctl enable --now tailscaled.service
 systemctl enable first-boot.service
 systemctl enable dcs-heartbeat.timer 2>/dev/null || true
 
