@@ -34,12 +34,13 @@ Each Pi ships to a school with DCS installed. On first boot after enrollment it 
 4. **Answer the TUI prompts:**
    - **OAuth client** (first Pi on this image only) — client ID + client secret from https://login.tailscale.com/admin/settings/trust-credentials → **OAuth clients** → Generate. Scopes: `devices:core` with **Read**, and `auth_keys` with **Write** (select every `tag:pi-*` you'll provision — see gotcha below). The TUI validates the creds live against Tailscale's token endpoint and refuses to continue on failure, then stores them at `/etc/dcs.conf` (mode `0600`). Subsequent Pis on the same image skip this prompt entirely.
    - **District slug** — e.g. `oakridge`
+   - **ACL tag check** — *immediately after the slug is set*, the TUI verifies `tag:pi-<slug>` is in the tailnet's `tagOwners`. If missing, it prints the exact HuJSON snippet to add, then **loops** — fix the policy in the admin console, save, hit "Re-check", and the TUI continues from this step. No restart, no re-typing the slug. (This is the only blocking ACL check.)
    - **School LAN CIDRs** — if another Pi is already enrolled in this district, its advertised routes auto-populate and you can accept them with a keystroke. Otherwise type the CIDR, e.g. `10.42.0.0/24`.
-   - **ACL precheck** — before minting, the TUI reads the tailnet ACL and verifies `tag:pi-<slug>` is in `tagOwners` and every entered CIDR is in `autoApprovers`. On mismatch it prints a copy-pasteable HuJSON snippet and exits. The check is read-only by design — round-tripping the ACL through `jq` would strip comments, so you fix it by hand in the admin console.
+   - **Route auto-approval advisory** — non-blocking: if any of your CIDRs aren't in `autoApprovers.routes`, the TUI warns you and shows the HuJSON snippet to add for hands-off future enrollments. Setup proceeds either way; you can approve the routes manually in the admin console after the Pi joins (one click per CIDR under "Edit route settings"). Surfaced again in the final summary so it doesn't get missed.
    - **Hostname** — auto-suggests the next free letter (`<slug>-pi-a`, `-b`, `-c`, …); blank accepts the suggestion.
    - **Auth key** — minted automatically via `dcs-mint-key` using your OAuth creds. No paste needed unless the mint fails, in which case the TUI surfaces Tailscale's actual error message and offers a paste fallback.
 5. The TUI writes the enrollment JSON, kicks `first-boot.service`, verifies the tag, and reboots.
-6. **Power off**, ship it. At the school the Pi boots, picks up the LAN, and re-advertises the CIDR. Routes auto-approve via ACL.
+6. **Power off**, ship it. At the school the Pi boots, picks up the LAN, and re-advertises the CIDR. If routes are in `autoApprovers` they take effect automatically; otherwise approve once in the admin console.
 
 ### OAuth client gotcha
 
@@ -49,9 +50,9 @@ Even with the `all` scope, the `auth_keys` permission on a Tailscale OAuth clien
 requested tags are not owned by this OAuth client
 ```
 
-Fix: edit the OAuth client at https://login.tailscale.com/admin/settings/trust-credentials and add the tag to the `auth_keys` scope row. The `devices:core` (Read) scope does not have this restriction — it applies tailnet-wide. The ACL precheck uses `policy_file:read` (included in `all`); if you scoped the client more tightly, the precheck will skip with a warning.
+Fix: edit the OAuth client at https://login.tailscale.com/admin/settings/trust-credentials and add the tag to the `auth_keys` scope row. The `devices:core` (Read) scope does not have this restriction — it applies tailnet-wide. The ACL checks use `policy_file:read` (included in `all`); if you scoped the client more tightly, the checks will skip with a warning and you should manually verify the ACL before continuing.
 
-**Prerequisite in Tailscale ACL:** `tag:pi-<slug>` must be declared in `tagOwners`, and the district's CIDR(s) must be in `autoApprovers` for `tag:pi-<slug>`, before the first Pi in a district enrolls. The ACL precheck will tell you exactly what's missing.
+**Prerequisite in Tailscale ACL:** `tag:pi-<slug>` must be declared in `tagOwners` before the first Pi in a district enrolls — this is the one ACL change you can't skip; the auth-key mint will fail without it. The TUI's tag check loops until this is in place. Adding the district's CIDR(s) to `autoApprovers` for `tag:pi-<slug>` is **recommended but optional** — without it, you'll need to approve the route once in the admin console after the Pi joins (the TUI tells you when this is needed and surfaces the reminder in the final summary).
 
 **Pre-baking OAuth creds:** if you build a custom image, set `DCS_TS_OAUTH_CLIENT_ID` / `DCS_TS_OAUTH_CLIENT_SECRET` before running `install.sh` (use `sudo -E`) and the TUI skips the OAuth prompt. For a one-off bypass with an already-minted key, export `DCS_AUTHKEY=tskey-auth-…` — the TUI uses it directly and skips both the OAuth prompt and the mint call.
 
