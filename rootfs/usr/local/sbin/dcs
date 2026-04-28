@@ -335,6 +335,23 @@ cmd_update() {
     done
     ok "${installed_units} units installed to /etc/systemd/system"
 
+    local installed_sysctl=0 sysctl_changed=0
+    for f in "${stage}/repo/rootfs/etc/sysctl.d/"*; do
+        [[ -f "${f}" ]] || continue
+        name=$(basename "${f}")
+        case "${name}" in .*|*~|*.swp) continue ;; esac
+        if ! cmp -s "${f}" "/etc/sysctl.d/${name}" 2>/dev/null; then
+            sysctl_changed=1
+        fi
+        install -m 0644 "${f}" "/etc/sysctl.d/${name}"
+        installed_sysctl=$((installed_sysctl + 1))
+    done
+    ok "${installed_sysctl} sysctl drop-ins installed to /etc/sysctl.d"
+    if [[ "${sysctl_changed}" == "1" ]]; then
+        sysctl --system >/dev/null
+        ok "sysctl reloaded"
+    fi
+
     systemctl daemon-reload
     ok "systemd reloaded"
 

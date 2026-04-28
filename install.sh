@@ -103,10 +103,17 @@ EOF
     echo "    wrote /etc/dcs.conf"
 fi
 
-echo "==> [6/7] install systemd units"
+echo "==> [6/7] install systemd units + sysctl drop-ins"
 for unit in first-boot.service dcs-heartbeat.service dcs-heartbeat.timer; do
     fetch "rootfs/etc/systemd/system/${unit}" "/etc/systemd/system/${unit}"
 done
+# Tailscale subnet routing needs net.ipv4.ip_forward=1. The pi-gen image
+# build picks this up via the rootfs overlay; the bootstrap path (this
+# script, run on a stock Pi OS Lite) has to install it explicitly.
+for conf in 99-detel.conf; do
+    fetch "rootfs/etc/sysctl.d/${conf}" "/etc/sysctl.d/${conf}"
+done
+sysctl --system >/dev/null
 systemctl daemon-reload
 # --now so tailscaled is actually running for dcs-setup's API calls below,
 # not just enabled for the next boot. (first-boot.service stays enable-only

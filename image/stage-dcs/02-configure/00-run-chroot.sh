@@ -21,5 +21,5 @@ if [ -f /home/dcs/.ssh/authorized_keys ]; then
     chown -R dcs:dcs /home/dcs/.ssh
 fi
 
-# ip_forward sysctl is already in /etc/sysctl.d/99-dcs.conf via the
+# ip_forward sysctl is already in /etc/sysctl.d/99-detel.conf via the
 # rootfs overlay — no additional writes needed here.

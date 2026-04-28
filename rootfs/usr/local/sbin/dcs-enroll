@@ -125,6 +125,27 @@ if [[ -n "${ADVERTISE_ROUTES}" ]]; then
     args+=(--advertise-routes "${ADVERTISE_ROUTES}")
 fi
 
+# Subnet routing silently black-holes if ip_forward is 0 when tailscaled
+# installs its netfilter rules. The image overlay and install.sh both place
+# /etc/sysctl.d/99-detel.conf, but Pis bootstrapped from older revisions
+# may lack it — write it here too so enrollment is self-sufficient.
+if [[ -n "${ADVERTISE_ROUTES}" ]]; then
+    if [[ "${DRY_RUN}" != "1" ]]; then
+        if [[ ! -f /etc/sysctl.d/99-detel.conf ]]; then
+            cat > /etc/sysctl.d/99-detel.conf <<'EOF'
+# Tailscale subnet router needs IP forwarding on.
+net.ipv4.ip_forward = 1
+net.ipv6.conf.all.forwarding = 1
+EOF
+            log "wrote /etc/sysctl.d/99-detel.conf"
+        fi
+        sysctl --system >/dev/null
+        if [[ "$(cat /proc/sys/net/ipv4/ip_forward)" != "1" ]]; then
+            die "ip_forward did not stick — refusing to advertise routes that won't work"
+        fi
+    fi
+fi
+
 log "joining tailnet (Tailscale SaaS)"
 priv tailscale "${args[@]}"
 
