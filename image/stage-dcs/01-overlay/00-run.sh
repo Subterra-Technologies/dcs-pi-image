@@ -13,7 +13,7 @@ rsync -a \
     "${OVERLAY}/" "${ROOTFS_DIR}/"
 
 # Fix perms on executables and sensitive paths.
-for sbin in dcs dcs-enroll dcs-heartbeat dcs-setup dcs-districts dcs-mint-key dcs-query; do
+for sbin in dcs dcs-enroll dcs-heartbeat dcs-setup dcs-districts dcs-mint-key dcs-query dcs-preflight; do
     chmod 0755 "${ROOTFS_DIR}/usr/local/sbin/${sbin}"
 done
 install -d -m 0700 "${ROOTFS_DIR}/etc/wireguard"

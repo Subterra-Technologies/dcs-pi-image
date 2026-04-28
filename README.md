@@ -74,10 +74,17 @@ sudo dcs status       # enrollment state, routes, peers, installed version
 sudo dcs stats        # uptime, load, temp, Zabbix proxy
 sudo dcs logs         # pick a service, tail the journal
 sudo dcs routes       # view/edit advertised subnets
+sudo dcs preflight    # verify the school's egress permits Tailscale
 sudo dcs update       # pull latest dcs scripts + units from the repo
 sudo dcs reconfigure  # re-run setup (swap district or authkey)
 sudo dcs reset        # logout + wipe local state
 ```
+
+### School-network connectivity
+
+`dcs preflight` is the install-time check that catches the failure mode where a district's content filter or DPI firewall is silently blocking Tailscale traffic. It runs the real UDP/STUN probes Tailscale uses, distinguishes SNI-based blocking from hard IP blocks, and exits non-zero if the network needs work. Run it after first boot at the school, before declaring install complete.
+
+Hand the [`SCHOOL_IT_REQUIREMENTS.md`](docs/SCHOOL_IT_REQUIREMENTS.md) handout to the district's network admin ahead of install — it documents the exact firewall exemptions Tailscale needs (UDP/3478, TCP/443 to `*.tailscale.com` without SSL inspection, no anonymizer/VPN category blocks) with vendor-specific guidance for Lightspeed, Cisco Umbrella, FortiGate, Palo Alto, Sophos, OPNsense, and pfSense.
 
 `dcs status` includes a **Version** line showing the short SHA of the currently installed `dcs-*` scripts + units (read from `/var/lib/dcs/installed-sha`).
 

@@ -7,6 +7,7 @@
 #   dcs stats         → uptime, peers, NAT
 #   dcs logs          → pick a service, tail journal
 #   dcs routes        → view/edit advertised subnets
+#   dcs preflight     → verify the school's egress permits Tailscale
 #   dcs reconfigure   → wipe state + re-run dcs-setup
 #   dcs reset         → tailnet logout + wipe local enrollment state
 #   dcs update        → pull latest dcs scripts + units from the repo
@@ -211,6 +212,14 @@ cmd_reconfigure() {
     exec /usr/local/sbin/dcs-setup
 }
 
+cmd_preflight() {
+    if [[ ! -x /usr/local/sbin/dcs-preflight ]]; then
+        err "/usr/local/sbin/dcs-preflight not found — run 'sudo dcs update' first"
+        exit 1
+    fi
+    exec /usr/local/sbin/dcs-preflight "$@"
+}
+
 caller_ssh_connection() {
     if [[ -n "${SSH_CONNECTION:-}" ]]; then
         printf '%s' "${SSH_CONNECTION}"
@@ -384,6 +393,7 @@ cmd_menu() {
         "stats        — uptime, peers, NAT" \
         "logs         — recent journal entries" \
         "routes       — view/edit advertised subnets" \
+        "preflight    — verify the school's egress permits Tailscale" \
         "update       — pull latest scripts + units from the repo" \
         "reconfigure  — re-run setup (new district/authkey)" \
         "reset        — wipe local enrollment state" \
@@ -393,6 +403,7 @@ cmd_menu() {
         stats*)       cmd_stats ;;
         logs*)        cmd_logs ;;
         routes*)      cmd_routes ;;
+        preflight*)   cmd_preflight ;;
         update*)      cmd_update ;;
         reconfigure*) cmd_reconfigure ;;
         reset*)       cmd_reset ;;
@@ -412,6 +423,8 @@ Subcommands:
   stats         uptime, peers, NAT
   logs          pick a service, show recent journal entries
   routes        view or edit advertised subnets
+  preflight     verify the school's egress permits Tailscale
+                (--quiet for a single PASS/WARN/FAIL line, useful in CI)
   update        pull the newest dcs scripts + units from the repo
                 (DCS_REPO_REF=<branch|tag|sha> to pin a version)
   reconfigure   wipe state + re-run dcs-setup
@@ -428,6 +441,7 @@ case "${1:-menu}" in
     stats)                 cmd_stats ;;
     logs)                  cmd_logs ;;
     routes)                cmd_routes ;;
+    preflight)             shift; cmd_preflight "$@" ;;
     update)                cmd_update ;;
     reconfigure|reconfig)  cmd_reconfigure ;;
     reset)                 shift; cmd_reset "$@" ;;
